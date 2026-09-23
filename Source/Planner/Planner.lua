@@ -1,0 +1,4666 @@
+----------------------------------------------------------------
+-- StockPiler4 Planner - pure gen-keyed plan from store snapshots
+-- Have/demand caches live here. Callees above callers (Lua 5.0).
+-- Stub-safe vs missing RecipeSpec / Grow / Refine.
+----------------------------------------------------------------
+
+StockPiler4 = StockPiler4 or {}
+StockPiler4.Planner = StockPiler4.Planner or {}
+local Planner = StockPiler4.Planner
+
+Planner._planGen = 0
+Planner._closedLiveSnapGen = nil
+Planner._craftsMemo = nil
+
+-- Have cache (empty table != warm - need warmed-for-snap flag).
+Planner._specHaveCache = nil
+Planner._specHaveSnapGen = nil
+Planner._specHaveWarmedSnap = nil
+
+-- Demand / focus caches
+Planner._demandCache = nil
+Planner._demandCacheKey = nil
+Planner._autoGrowFocusCache = nil
+Planner._autoGrowFocusKey = nil
+Planner._autoBuyFocusCache = nil
+Planner._autoBuyFocusKey = nil
+
+----------------------------------------------------------------
+-- Tiny helpers
+----------------------------------------------------------------
+
+local function T(key, tokens)
+    if StockPiler4.T then
+        return StockPiler4.T(key, tokens)
+    end
+    return towstring(tostring(key or ""))
+end
+
+local function PerfBegin(name)
+    local P = StockPiler4.Perf
+    if P and P.Begin then
+        P.Begin(name)
+    end
+end
+
+local function PerfEnd(name)
+    local P = StockPiler4.Perf
+    if P and P.End then
+        P.End(name)
+    end
+end
+
+local function PerfMark(name)
+    local P = StockPiler4.Perf
+    if P and P.Mark then
+        P.Mark(name)
+    end
+end
+
+local function ToNarrow(v)
+    return StockPiler4.Util.ToNarrow(v)
+end
+
+local function RecipeSpec()
+    return StockPiler4.RecipeSpec
+end
+
+local function MaterialSpec()
+    return StockPiler4.MaterialSpec
+end
+
+local function SpecKey(spec)
+    local MS = MaterialSpec()
+    if type(spec) ~= "table" then
+        return nil
+    end
+    if MS and MS.Key then
+        local bound = nil
+        if spec.incomplete == true then
+            bound = tonumber(spec.boundUid) or tonumber(spec.uid) or nil
+        end
+        local k = MS.Key(spec, bound)
+        if type(k) == "string" and k ~= "" then
+            return k
+        end
+    end
+    if MS and MS.ProductKey then
+        local k = MS.ProductKey(spec)
+        if type(k) == "string" and k ~= "" then
+            return k
+        end
+    end
+    local uid = tonumber(spec.uid or spec.uniqueID) or 0
+    if uid > 0 then
+        return "uid:" .. tostring(uid)
+    end
+    return nil
+end
+
+--- Uid binding only for incomplete mains (exact identity until EFFECT stamped).
+local function SpecBoundUid(spec)
+    if type(spec) ~= "table" then
+        return 0
+    end
+    if spec.incomplete == true then
+        return tonumber(spec.boundUid) or tonumber(spec.uid) or tonumber(spec.uniqueID) or 0
+    end
+    return 0
+end
+
+local function CurrentSnapGen()
+    local Inv = StockPiler4.Inventory
+    if Inv and Inv.GetSnapGen then
+        return tonumber(Inv.GetSnapGen()) or 0
+    end
+    return 0
+end
+
+local function CharacterRow()
+    return StockPiler4.Util.CharacterRow(false)
+end
+
+local function CanBrewPotionsSkill()
+    local Caps = StockPiler4.TradeSkillCaps
+    return Caps and Caps.CanBrewPotions and Caps.CanBrewPotions() == true
+end
+
+local function CanAutoGrowSkill()
+    local Caps = StockPiler4.TradeSkillCaps
+    return Caps and Caps.CanAutoGrow and Caps.CanAutoGrow() == true
+end
+
+local function RespectGrowReserve()
+    if not CanAutoGrowSkill() then
+        return false
+    end
+    local row = CharacterRow()
+    if type(row) ~= "table" then
+        return true
+    end
+    return row.brewRespectGrowReserve ~= false
+end
+
+local function EmitDefault(line)
+    if StockPiler4.Debug and StockPiler4.Debug.Print then
+        StockPiler4.Debug.Print(towstring(tostring(line or "")))
+    elseif type(d) == "function" then
+        d(tostring(line or ""))
+    end
+end
+
+local function MakeEmit(emit)
+    if type(emit) == "function" then
+        return emit
+    end
+    return EmitDefault
+end
+
+----------------------------------------------------------------
+-- Gen / cache keys
+----------------------------------------------------------------
+
+local function SettingsHash()
+    local hash = 1
+    local Watch = StockPiler4.Watch
+    if Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() == true then
+        hash = hash + 1
+    end
+    if Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true then
+        hash = hash + 2
+    end
+    if Watch and Watch.GetSeedBufferMin then
+        hash = hash + (tonumber(Watch.GetSeedBufferMin()) or 0) * 3
+    end
+    if Watch and Watch.IsAutoBuyEnabled and Watch.IsAutoBuyEnabled() == true then
+        hash = hash + 5
+    end
+    if RespectGrowReserve() then
+        hash = hash + 7
+    end
+    local Caps = StockPiler4.TradeSkillCaps
+    if Caps then
+        hash = hash + (Caps.GetCultSkill and Caps.GetCultSkill() or 0) * 11
+        hash = hash + (Caps.GetApoSkill and Caps.GetApoSkill() or 0) * 13
+    end
+    local SkillUp = StockPiler4.SkillUp
+    if SkillUp then
+        if SkillUp.IsCultEnabled and SkillUp.IsCultEnabled() == true then
+            hash = hash + 17
+        end
+        if SkillUp.IsApoEnabled and SkillUp.IsApoEnabled() == true then
+            hash = hash + 19
+        end
+    end
+    return hash
+end
+
+local function ReadGens()
+    local Inv = StockPiler4.Inventory
+    local Garden = StockPiler4.Garden
+    local RP = StockPiler4.RefinePipeline
+    local Watch = StockPiler4.Watch
+    local Know = StockPiler4.Knowledge
+    return {
+        snapGen = Inv and Inv.GetSnapGen and Inv.GetSnapGen() or 0,
+        gardenGen = Garden and (Garden.GetPlanGen and Garden.GetPlanGen() or Garden.GetGen and Garden.GetGen()) or 0,
+        refineGen = RP and RP.GetGen and RP.GetGen() or 0,
+        watchGen = Watch and Watch.GetGen and Watch.GetGen() or 0,
+        knowledgeGen = Know and Know.GetGen and Know.GetGen() or 0,
+        settingsHash = SettingsHash(),
+    }
+end
+
+local function FormatCacheKey(g)
+    return string.format(
+        "s%d|g%d|r%d|w%d|k%d|h%d",
+        tonumber(g.snapGen) or 0,
+        tonumber(g.gardenGen) or 0,
+        tonumber(g.refineGen) or 0,
+        tonumber(g.watchGen) or 0,
+        tonumber(g.knowledgeGen) or 0,
+        tonumber(g.settingsHash) or 0
+    )
+end
+
+--- Structural (non-snap, non-refine): gardenPlan + watch + knowledge + settings.
+local function StructuralNonRefineKey(g)
+    return string.format(
+        "g%d|w%d|k%d|h%d",
+        tonumber(g.gardenGen) or 0,
+        tonumber(g.watchGen) or 0,
+        tonumber(g.knowledgeGen) or 0,
+        tonumber(g.settingsHash) or 0
+    )
+end
+
+--- Recipe-structural: watch + knowledge + settings (garden may change for GardenPatch).
+local function RecipeStructuralKey(g)
+    return string.format(
+        "w%d|k%d|h%d",
+        tonumber(g.watchGen) or 0,
+        tonumber(g.knowledgeGen) or 0,
+        tonumber(g.settingsHash) or 0
+    )
+end
+
+local function NonSnapGensKey(g)
+    return string.format(
+        "g%d|r%d|w%d|k%d|h%d",
+        tonumber(g.gardenGen) or 0,
+        tonumber(g.refineGen) or 0,
+        tonumber(g.watchGen) or 0,
+        tonumber(g.knowledgeGen) or 0,
+        tonumber(g.settingsHash) or 0
+    )
+end
+
+----------------------------------------------------------------
+-- Spec-have cache (one-pass WarmSpecHaveCache)
+----------------------------------------------------------------
+
+--- Plant/refine quiet + harvest storm: keep prior have/demand counts instead of
+--- WarmHave.miss bag scans on every Inv.ApplySlots snap bump.
+local function HoldHaveCacheQuiet()
+    local Sch = StockPiler4.Scheduler
+    if not Sch then
+        return false
+    end
+    if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
+        return true
+    end
+    if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+        return true
+    end
+    return false
+end
+
+local function MarkHaveCacheWarmed(snapGen)
+    Planner._specHaveWarmedSnap = tonumber(snapGen) or CurrentSnapGen()
+end
+
+local function EnsureHaveCacheForSnap()
+    local snapGen = CurrentSnapGen()
+    if Planner._specHaveSnapGen ~= snapGen or type(Planner._specHaveCache) ~= "table" then
+        if HoldHaveCacheQuiet() and type(Planner._specHaveCache) == "table" then
+            -- Remount stale counts onto the new snap; orch decisions tolerate
+            -- +/-1 until quiet ends and FrameWork re-warms.
+            Planner._specHaveSnapGen = snapGen
+            MarkHaveCacheWarmed(snapGen)
+            return Planner._specHaveCache, snapGen
+        end
+        Planner._specHaveCache = {}
+        Planner._specHaveSnapGen = snapGen
+        Planner._specHaveWarmedSnap = nil
+    end
+    return Planner._specHaveCache, snapGen
+end
+
+local function IsHaveCacheWarmForSnap()
+    local snapGen = CurrentSnapGen()
+    return Planner._specHaveWarmedSnap ~= nil
+        and (tonumber(Planner._specHaveWarmedSnap) or -1) == snapGen
+        and type(Planner._specHaveCache) == "table"
+end
+
+--- CountByUid only for incomplete+boundUid; one bag pass for complete specs.
+--- Do not pre-zero craftable / cache entries during brew-load WarmHave.
+local function WarmSpecHaveCache(specs)
+    if type(specs) ~= "table" then
+        MarkHaveCacheWarmed(CurrentSnapGen())
+        return 0
+    end
+    -- During quiet: never bag-walk; remount marks warm via EnsureHaveCacheForSnap.
+    if HoldHaveCacheQuiet() and type(Planner._specHaveCache) == "table" then
+        local _, snapGen = EnsureHaveCacheForSnap()
+        MarkHaveCacheWarmed(snapGen)
+        return 0
+    end
+    local cache, snapGen = EnsureHaveCacheForSnap()
+    local MS = MaterialSpec()
+    local Inv = StockPiler4.Inventory
+    local list = {}
+    if specs[1] ~= nil then
+        for i = 1, #specs do
+            local v = specs[i]
+            if type(v) == "table" then
+                list[#list + 1] = type(v.spec) == "table" and v.spec or v
+            end
+        end
+    else
+        for _, v in pairs(specs) do
+            if type(v) == "table" then
+                list[#list + 1] = type(v.spec) == "table" and v.spec or v
+            end
+        end
+    end
+    local pending = {}
+    local pendingKeys = {}
+    local filled = 0
+    local keyIndex = {} -- complete SpecKey -> list of pending entries (usually 1)
+    for i = 1, #list do
+        local spec = list[i]
+        local key = SpecKey(spec)
+        if key ~= nil and cache[key] == nil then
+            local bound = SpecBoundUid(spec)
+            if bound > 0 and Inv and Inv.CountByUid then
+                cache[key] = tonumber(Inv.CountByUid(bound)) or 0
+                filled = filled + 1
+            elseif pendingKeys[key] ~= true then
+                pendingKeys[key] = true
+                local entry = { key = key, spec = spec }
+                pending[#pending + 1] = entry
+                keyIndex[key] = entry
+            end
+        end
+    end
+    if #pending == 0 then
+        MarkHaveCacheWarmed(snapGen)
+        return filled
+    end
+    PerfMark("WarmHave.miss")
+    local totals = {}
+    for i = 1, #pending do
+        totals[pending[i].key] = 0
+    end
+    if Inv and Inv.ForEachItem then
+        Inv.ForEachItem(function(item)
+            if type(item) ~= "table" then
+                return
+            end
+            if Inv.CanUseCraftingItem and Inv.CanUseCraftingItem(item) ~= true then
+                return
+            end
+            if MS and MS.IsSeedOrSpore and MS.IsSeedOrSpore(item) == true then
+                -- Still allow ProductMatches for grow demand of plant forms via AsApothecaryProduct.
+            end
+            local qty = tonumber(item.stackCount) or tonumber(item.stackcount) or 1
+            if qty < 1 then
+                qty = 1
+            end
+            -- Fast path: index complete apo products by ProductKey when available.
+            local productKey = nil
+            if MS and MS.ProductKey then
+                productKey = MS.ProductKey(item)
+            end
+            if type(productKey) == "string" and productKey ~= "" and keyIndex[productKey] then
+                totals[productKey] = (totals[productKey] or 0) + qty
+                return
+            end
+            for i = 1, #pending do
+                local entry = pending[i]
+                local match = false
+                if MS and MS.ProductMatches then
+                    match = MS.ProductMatches(item, entry.spec) == true
+                elseif MS and MS.Matches then
+                    match = MS.Matches(item, entry.spec) == true
+                else
+                    local uid = tonumber(item.uniqueID) or 0
+                    match = uid > 0 and uid == SpecBoundUid(entry.spec)
+                end
+                if match then
+                    totals[entry.key] = (totals[entry.key] or 0) + qty
+                end
+            end
+        end)
+    end
+    for i = 1, #pending do
+        local entry = pending[i]
+        -- Write after bag pass only (never pre-zero so live readers stay cold).
+        cache[entry.key] = tonumber(totals[entry.key]) or 0
+    end
+    MarkHaveCacheWarmed(snapGen)
+    return filled + #pending
+end
+
+local function CollectWatchedHaveSpecs()
+    local Watch = StockPiler4.Watch
+    local RS = RecipeSpec()
+    local watches = Watch and Watch.GetWatches and Watch.GetWatches() or {}
+    local specs = {}
+    if type(watches) ~= "table" then
+        return specs
+    end
+    for watchKey, watch in pairs(watches) do
+        if type(watch) == "table" and watch.enabled == true and RS and RS.RecipeSpecForPotion then
+            local recipe = RS.RecipeSpecForPotion(watchKey)
+            if type(recipe) == "table" then
+                if RS.HydrateRecipeSlots then
+                    RS.HydrateRecipeSlots(recipe)
+                end
+                local slots = recipe.slots
+                if type(slots) == "table" then
+                    for i = 1, #slots do
+                        local spec = slots[i] and slots[i].spec
+                        if type(spec) == "table" then
+                            specs[#specs + 1] = spec
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return specs
+end
+
+local function WarmSpecHaveCacheForWatches()
+    return WarmSpecHaveCache(CollectWatchedHaveSpecs())
+end
+
+--- Frame-slice WarmHave: frame 1 collects + CountByUid; frame 2 bag-passes pending.
+local function BeginWarmHaveSlice()
+    Planner._warmHaveSlice = nil
+    if HoldHaveCacheQuiet() then
+        if type(Planner._specHaveCache) == "table" then
+            local _, snapGen = EnsureHaveCacheForSnap()
+            MarkHaveCacheWarmed(snapGen)
+        end
+        return "done"
+    end
+    local specs = CollectWatchedHaveSpecs()
+    if type(specs) ~= "table" or #specs == 0 then
+        MarkHaveCacheWarmed(CurrentSnapGen())
+        return "done"
+    end
+    local cache, snapGen = EnsureHaveCacheForSnap()
+    local Inv = StockPiler4.Inventory
+    local pending = {}
+    local pendingKeys = {}
+    local keyIndex = {}
+    local filled = 0
+    for i = 1, #specs do
+        local spec = specs[i]
+        local key = SpecKey(spec)
+        if key ~= nil and cache[key] == nil then
+            local bound = SpecBoundUid(spec)
+            if bound > 0 and Inv and Inv.CountByUid then
+                cache[key] = tonumber(Inv.CountByUid(bound)) or 0
+                filled = filled + 1
+            elseif pendingKeys[key] ~= true then
+                pendingKeys[key] = true
+                local entry = { key = key, spec = spec }
+                pending[#pending + 1] = entry
+                keyIndex[key] = entry
+            end
+        end
+    end
+    if #pending == 0 then
+        MarkHaveCacheWarmed(snapGen)
+        return "done"
+    end
+    Planner._warmHaveSlice = {
+        snapGen = snapGen,
+        pending = pending,
+        keyIndex = keyIndex,
+        filled = filled,
+    }
+    return "continue"
+end
+
+local function FinishWarmHaveSlice()
+    local slice = Planner._warmHaveSlice
+    Planner._warmHaveSlice = nil
+    if type(slice) ~= "table" or type(slice.pending) ~= "table" then
+        MarkHaveCacheWarmed(CurrentSnapGen())
+        return
+    end
+    local cache, snapGen = EnsureHaveCacheForSnap()
+    if snapGen ~= (tonumber(slice.snapGen) or -1) then
+        -- Snap moved mid-slice; full warm next prewarm.
+        return
+    end
+    PerfMark("WarmHave.miss")
+    local pending = slice.pending
+    local keyIndex = slice.keyIndex or {}
+    local totals = {}
+    for i = 1, #pending do
+        totals[pending[i].key] = 0
+    end
+    local MS = MaterialSpec()
+    local Inv = StockPiler4.Inventory
+    if Inv and Inv.ForEachItem then
+        Inv.ForEachItem(function(item)
+            if type(item) ~= "table" then
+                return
+            end
+            if Inv.CanUseCraftingItem and Inv.CanUseCraftingItem(item) ~= true then
+                return
+            end
+            local qty = tonumber(item.stackCount) or tonumber(item.stackcount) or 1
+            if qty < 1 then
+                qty = 1
+            end
+            local productKey = nil
+            if MS and MS.ProductKey then
+                productKey = MS.ProductKey(item)
+            end
+            if type(productKey) == "string" and productKey ~= "" and keyIndex[productKey] then
+                totals[productKey] = (totals[productKey] or 0) + qty
+                return
+            end
+            for i = 1, #pending do
+                local entry = pending[i]
+                local match = false
+                if MS and MS.ProductMatches then
+                    match = MS.ProductMatches(item, entry.spec) == true
+                elseif MS and MS.Matches then
+                    match = MS.Matches(item, entry.spec) == true
+                else
+                    local uid = tonumber(item.uniqueID) or 0
+                    match = uid > 0 and uid == SpecBoundUid(entry.spec)
+                end
+                if match then
+                    totals[entry.key] = (totals[entry.key] or 0) + qty
+                end
+            end
+        end)
+    end
+    for i = 1, #pending do
+        local entry = pending[i]
+        cache[entry.key] = tonumber(totals[entry.key]) or 0
+    end
+    MarkHaveCacheWarmed(snapGen)
+end
+
+local function CountItemsMatchingSpec(spec, opts)
+    opts = type(opts) == "table" and opts or {}
+    local key = SpecKey(spec)
+    if key == nil then
+        return opts.cacheOnly == true and nil or 0
+    end
+    local cache = Planner._specHaveCache
+    if type(cache) == "table" and cache[key] ~= nil and IsHaveCacheWarmForSnap() then
+        return tonumber(cache[key]) or 0
+    end
+    if opts.cacheOnly == true then
+        if type(cache) == "table" and cache[key] ~= nil then
+            return tonumber(cache[key]) or 0
+        end
+        return nil
+    end
+    local RS = RecipeSpec()
+    if RS and RS.CountItemsMatchingSpec then
+        return tonumber(RS.CountItemsMatchingSpec(spec)) or 0
+    end
+    local MS = MaterialSpec()
+    local Inv = StockPiler4.Inventory
+    local bound = SpecBoundUid(spec)
+    if bound > 0 and Inv and Inv.CountByUid then
+        return tonumber(Inv.CountByUid(bound)) or 0
+    end
+    local total = 0
+    if Inv and Inv.ForEachItem and MS and MS.ProductMatches then
+        Inv.ForEachItem(function(item)
+            if type(item) == "table" and MS.ProductMatches(item, spec) == true then
+                local qty = tonumber(item.stackCount) or 1
+                if qty < 1 then
+                    qty = 1
+                end
+                total = total + qty
+            end
+        end)
+    end
+    return total
+end
+
+local function BeginPlanCraftsMemo()
+    Planner._craftsMemo = {}
+end
+
+local function CountCraftsPossibleMemo(recipe)
+    local RS = RecipeSpec()
+    if type(recipe) ~= "table" or not RS or not RS.CountCraftsPossible then
+        return 0
+    end
+    local memo = Planner._craftsMemo
+    local key = tostring(recipe.recipeKey or recipe.key or recipe.id or "")
+    if key ~= "" and type(memo) == "table" and memo[key] ~= nil then
+        return memo[key]
+    end
+    local opts = nil
+    if RespectGrowReserve() then
+        opts = { respectGrowReserve = true }
+    end
+    PerfMark("Status.Craftable")
+    local n = math.max(0, math.floor((tonumber(RS.CountCraftsPossible(recipe, opts)) or 0) + 0.5))
+    if key ~= "" and type(memo) == "table" then
+        memo[key] = n
+    end
+    return n
+end
+
+local function RecipeYield(recipe)
+    local RS = RecipeSpec()
+    if RS and RS.RecipeOutputYield then
+        local y = tonumber(RS.RecipeOutputYield(recipe)) or 1
+        if y < 1 then
+            y = 1
+        end
+        return y
+    end
+    return math.max(1, tonumber(recipe and recipe.recipeYield) or 1)
+end
+
+local function CraftsNeededForDeficit(deficit, recipe)
+    local RS = RecipeSpec()
+    if RS and RS.CraftsNeededForDeficit then
+        return tonumber(RS.CraftsNeededForDeficit(deficit, recipe)) or 0
+    end
+    local yield = RecipeYield(recipe)
+    deficit = tonumber(deficit) or 0
+    if deficit <= 0 then
+        return 0
+    end
+    return math.ceil(deficit / yield)
+end
+
+local function CountPotionsCraftable(recipe)
+    local RS = RecipeSpec()
+    if RS and RS.CountPotionsCraftable then
+        return math.max(0, math.floor((tonumber(RS.CountPotionsCraftable(recipe)) or 0) + 0.5))
+    end
+    local crafts = CountCraftsPossibleMemo(recipe)
+    return math.max(0, math.floor((crafts * RecipeYield(recipe)) + 0.5))
+end
+
+----------------------------------------------------------------
+-- Growable / slot classification (stub-safe)
+----------------------------------------------------------------
+
+local function SpecIsGrowable(spec, role)
+    if role == "container" then
+        return false
+    end
+    local SM = StockPiler4.SeedMap
+    if SM and SM.IsGrowableSpec and SM.IsGrowableSpec(spec) == true then
+        return true
+    end
+    local MS = MaterialSpec()
+    if MS and MS.IsGrowable and MS.IsGrowable(spec) == true then
+        return true
+    end
+    if SM and SM.IsHarvestByproduct and SM.IsHarvestByproduct(spec) == true then
+        return false
+    end
+    return false
+end
+
+local function SpecIsHarvestByproduct(spec)
+    local SM = StockPiler4.SeedMap
+    if SM and SM.IsHarvestByproduct then
+        return SM.IsHarvestByproduct(spec) == true
+    end
+    return false
+end
+
+--- Prefer main -> goldweed/stab -> extender -> multiplier when growing convert feedstock for resin.
+local function ByproductConvertRoleRank(role)
+    role = tostring(role or "")
+    if role == "main" then
+        return 1
+    end
+    if role == "stabilizer" or role == "goldweed" then
+        return 2
+    end
+    if role == "extender" then
+        return 3
+    end
+    if role == "multiplier" or role == "stimulant" then
+        return 4
+    end
+    return 99
+end
+
+local function InflateConvertGrowRow(row, byproductItemsShort)
+    if type(row) ~= "table" or (tonumber(byproductItemsShort) or 0) <= 0 then
+        return
+    end
+    if row.brewAbsolute == nil then
+        row.brewAbsolute = tonumber(row.absolute) or 0
+    end
+    row.byproductConvertExtra = (tonumber(row.byproductConvertExtra) or 0)
+        + byproductItemsShort
+    row.absolute = (tonumber(row.absolute) or 0) + byproductItemsShort
+    row.deficit = math.max(0, (tonumber(row.absolute) or 0) - (tonumber(row.have) or 0))
+    local pc = math.max(1, tonumber(row.perCraft) or 1)
+    row.craftsHave = math.floor((tonumber(row.have) or 0) / pc)
+    row.craftsNeeded = math.ceil((tonumber(row.absolute) or 0) / pc)
+    row.craftsShort = math.max(0, row.craftsNeeded - row.craftsHave)
+end
+
+local function EffectivePerCraft(slot, slots)
+    local RS = RecipeSpec()
+    if RS and RS.EffectiveSpecPerCraft then
+        return math.max(1, tonumber(RS.EffectiveSpecPerCraft(slot, slots)) or 1)
+    end
+    return math.max(1, tonumber(slot and slot.perCraft) or 1)
+end
+
+local function ResolveSlotSpec(slot)
+    if type(slot) ~= "table" then
+        return nil
+    end
+    if type(slot.spec) == "table" then
+        return slot.spec
+    end
+    local RS = RecipeSpec()
+    if RS and RS.ResolveSlotSpec then
+        return RS.ResolveSlotSpec(slot)
+    end
+    return nil
+end
+
+--- One RecipeSlotPlanEntry: status + tipSlots share.
+local function RecipeSlotPlanEntry(slot, slots, craftsNeeded, demand)
+    local spec = ResolveSlotSpec(slot)
+    if type(spec) ~= "table" then
+        return nil
+    end
+    local role = slot.role or spec.role
+    local perCraft = EffectivePerCraft(slot, slots)
+    local need = (tonumber(craftsNeeded) or 0) * perCraft
+    local have = CountItemsMatchingSpec(spec)
+    local deficit = math.max(0, need - have)
+    local entry = {
+        spec = spec,
+        role = role,
+        perCraft = perCraft,
+        need = need,
+        have = have,
+        deficit = deficit,
+        craftsHave = math.floor(have / perCraft),
+        craftsNeeded = math.ceil(need / math.max(1, perCraft)),
+        kind = "buy",
+        needsRefine = false,
+        buySeedOrMat = false,
+        seedUid = 0,
+        plantUid = 0,
+        seedHave = 0,
+        seedCredit = 0,
+        note = nil,
+    }
+    local demandRow = nil
+    local key = SpecKey(spec)
+    if type(demand) == "table" and key ~= nil then
+        demandRow = demand[key]
+    end
+    if SpecIsHarvestByproduct(spec) then
+        entry.kind = "convert"
+    elseif SpecIsGrowable(spec, role) then
+        entry.kind = "plant"
+        local SM = StockPiler4.SeedMap
+        local seed = nil
+        if SM and SM.ResolveSeedForSpec then
+            seed = SM.ResolveSeedForSpec(spec)
+        end
+        if type(seed) == "table" then
+            entry.seed = seed
+            entry.seedUid = tonumber(seed.uniqueID or seed.uid) or 0
+            entry.plantUid = tonumber(seed.plantUid) or SpecBoundUid(spec)
+        else
+            entry.plantUid = SpecBoundUid(spec)
+            if entry.plantUid <= 0 and SM and SM.FindPlantUidForSpec then
+                entry.plantUid = tonumber(SM.FindPlantUidForSpec(spec)) or 0
+            end
+        end
+        local Inv = StockPiler4.Inventory
+        if entry.seedUid > 0 and Inv and Inv.CountByUid then
+            entry.seedHave = tonumber(Inv.CountByUid(entry.seedUid)) or 0
+        end
+        -- Prefer refine / seed-buffer over Buy seeds when refinable plants remain.
+        if entry.seedHave <= 0 and entry.plantUid > 0 and Inv and Inv.CountByUid then
+            local plants = tonumber(Inv.CountByUid(entry.plantUid)) or 0
+            if plants > 0 then
+                entry.needsRefine = true
+            elseif entry.seedUid > 0 then
+                entry.buySeedOrMat = true
+            end
+        elseif entry.seedHave <= 0 and entry.seedUid > 0 then
+            entry.buySeedOrMat = true
+        end
+        local Refine = StockPiler4.Refine
+        if Refine and Refine.GetSeedBudgetForSpec then
+            local budget = Refine.GetSeedBudgetForSpec(spec, entry.seedUid)
+            entry.seedCredit = tonumber(budget and budget.credit) or 0
+        end
+    elseif role == "container" then
+        entry.kind = "buy"
+    else
+        entry.kind = "buy"
+    end
+    -- Tip notes: (Shared) contested vs (Pooled) multi-watch demand.
+    if type(demandRow) == "table" and type(demandRow.watchNames) == "table" and #demandRow.watchNames > 1 then
+        entry.note = "(Pooled)"
+    end
+    return entry
+end
+
+----------------------------------------------------------------
+-- Balanced demand + water-fill focus
+----------------------------------------------------------------
+
+local function BottleGap(target, stock, craftable)
+    return math.max(0, (tonumber(target) or 0) - (tonumber(stock) or 0) - (tonumber(craftable) or 0))
+end
+
+local function ResolveWatchRow(watchKey, watch)
+    if type(watch) == "table" then
+        return watch
+    end
+    local Watch = StockPiler4.Watch
+    local watches = Watch and Watch.GetWatches and Watch.GetWatches() or nil
+    if type(watches) ~= "table" then
+        return nil
+    end
+    local key = tostring(watchKey or "")
+    if key == "" then
+        return nil
+    end
+    return watches[key]
+end
+
+local function WatchWantsAutoGrow(watchKey, watch)
+    local RS = RecipeSpec()
+    watch = ResolveWatchRow(watchKey, watch)
+    if RS and RS.ShouldAutoGrowPotion then
+        return RS.ShouldAutoGrowPotion(watchKey, watch) == true
+    end
+    if type(watch) ~= "table" or watch.enabled ~= true then
+        return false
+    end
+    local Watch = StockPiler4.Watch
+    if Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() ~= true then
+        return false
+    end
+    return watch.autoGrow == true
+end
+
+--- Grow needs master+row AutoGrow; buy acting set needs enabled+row AutoGrow
+--- (master AutoGrow may be off - AutoBuy still runs at vendors).
+local function WatchInActingSet(watchKey, watch, mode)
+    if mode == "buy" then
+        watch = ResolveWatchRow(watchKey, watch)
+        return type(watch) == "table" and watch.enabled == true and watch.autoGrow == true
+    end
+    return WatchWantsAutoGrow(watchKey, watch)
+end
+
+local function ResolveWatchPotion(watchKey)
+    local RS = RecipeSpec()
+    if RS and RS.ResolveWatchPotion then
+        return RS.ResolveWatchPotion(watchKey)
+    end
+    return nil
+end
+
+local function PotionHave(resolved, potion, outputUid)
+    local RS = RecipeSpec()
+    if RS and RS.PotionHaveCombined and type(potion) == "table" then
+        return tonumber(RS.PotionHaveCombined(potion)) or 0
+    end
+    local uid = tonumber(outputUid)
+        or (resolved and tonumber(resolved.outputUid))
+        or (type(potion) == "table" and tonumber(potion.outputUid))
+        or 0
+    local Inv = StockPiler4.Inventory
+    if uid > 0 and Inv and Inv.CountByUid then
+        return tonumber(Inv.CountByUid(uid)) or 0
+    end
+    return 0
+end
+
+local function CollectFocus(mode)
+    local Watch = StockPiler4.Watch
+    local RS = RecipeSpec()
+    local snapGen = CurrentSnapGen()
+    local watchGen = Watch and Watch.GetGen and Watch.GetGen() or 0
+    local PS = StockPiler4.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get() or nil
+    local planGen = type(plan) == "table" and tonumber(plan.planGen) or 0
+    local cacheKey = tostring(mode) .. ":" .. tostring(snapGen) .. ":"
+        .. tostring(watchGen) .. ":" .. tostring(planGen)
+    local cacheField = mode == "buy" and "_autoBuyFocusCache" or "_autoGrowFocusCache"
+    local keyField = mode == "buy" and "_autoBuyFocusKey" or "_autoGrowFocusKey"
+    if type(Planner[cacheField]) == "table" and Planner[keyField] == cacheKey then
+        return Planner[cacheField]
+    end
+    local focus = { maxBottleGap = nil, minCraftable = nil, watches = {} }
+    local candidates = {}
+
+    -- Prefer polished plan rows (single source of truth) when available.
+    local planRows = type(plan) == "table" and plan.rows or nil
+    if type(planRows) == "table" and #planRows > 0 then
+        for i = 1, #planRows do
+            local row = planRows[i]
+            if type(row) == "table" then
+                local watchKey = tostring(row.potionKey or row.potionRecipeKey or row.id or "")
+                if row.kind == "plant" or row.isPlantWatch == true then
+                    -- Plant stock rows never enter potion grow/buy focus.
+                else
+                local watch = ResolveWatchRow(watchKey, nil)
+                local ok = WatchInActingSet(watchKey, watch, mode)
+                local deficit = tonumber(row.potionDeficit) or 0
+                if ok and deficit > 0 and watchKey ~= "" then
+                    local gap = tonumber(row.bottleGap)
+                    if gap == nil then
+                        gap = BottleGap(row.potionMin or row.target, row.potionHave, row.craftable)
+                    end
+                    local statusKey = tostring(row.statusKey or "")
+                    local still = gap > 0
+                    if not still then
+                        -- Shared contest (gap=0): Grow and Buy both keep these watches.
+                        -- Buy must purchase contested flasks so AutoBrew can clear the set.
+                        still = row.craftableShared == true
+                        if mode ~= "buy" and not still then
+                            still = statusKey == "need_seeds"
+                        end
+                    end
+                    if still then
+                        local priorityTier = tonumber(row.priorityTier)
+                        if priorityTier == nil and Watch and Watch.GetPriorityTier then
+                            priorityTier = Watch.GetPriorityTier(watchKey)
+                        end
+                        candidates[#candidates + 1] = {
+                            potionKey = watchKey,
+                            name = row.name or L"",
+                            craftable = tonumber(row.craftable) or 0,
+                            stock = tonumber(row.potionHave) or 0,
+                            target = tonumber(row.potionMin) or tonumber(row.target) or 0,
+                            bottleGap = gap,
+                            recipe = row.recipe,
+                            statusKey = statusKey,
+                            craftableShared = row.craftableShared == true,
+                            priorityTier = tonumber(priorityTier) or 1,
+                        }
+                        if focus.maxBottleGap == nil or gap > focus.maxBottleGap then
+                            focus.maxBottleGap = gap
+                        end
+                    end
+                end
+                end
+            end
+        end
+    else
+        -- Cold boot: no plan yet - resolve watches once.
+        local watches = Watch and Watch.GetWatches and Watch.GetWatches() or {}
+        if type(watches) == "table" and RS then
+            for watchKey, watch in pairs(watches) do
+                if WatchInActingSet(watchKey, watch, mode) then
+                    local resolved = ResolveWatchPotion(watchKey)
+                    local potion = resolved and resolved.potion
+                    local recipe = RS.RecipeSpecForPotion and RS.RecipeSpecForPotion(watchKey)
+                    if type(potion) == "table" and type(recipe) == "table" then
+                        local target = tonumber(watch.targetStock) or 0
+                        local stock = PotionHave(resolved, potion, potion.outputUid)
+                        local deficit = math.max(0, target - stock)
+                        if deficit > 0 and target > 0 then
+                            local craftable = CountPotionsCraftable(recipe)
+                            local gap = BottleGap(target, stock, craftable)
+                            local still = gap > 0
+                            if not still then
+                                -- Plan-backed shared contest / grow still-needed.
+                                if RS.WatchStillNeedsGrow then
+                                    still = RS.WatchStillNeedsGrow(potion, recipe, target, watchKey) == true
+                                end
+                            end
+                            if still then
+                                local priorityTier = 1
+                                if Watch and Watch.GetPriorityTier then
+                                    priorityTier = Watch.GetPriorityTier(watchKey)
+                                else
+                                    priorityTier = tonumber(watch.priorityTier) or 1
+                                end
+                                candidates[#candidates + 1] = {
+                                    potionKey = watchKey,
+                                    name = potion.name or L"",
+                                    craftable = craftable,
+                                    stock = stock,
+                                    target = target,
+                                    bottleGap = gap,
+                                    recipe = recipe,
+                                    priorityTier = tonumber(priorityTier) or 1,
+                                }
+                                if focus.maxBottleGap == nil or gap > focus.maxBottleGap then
+                                    focus.maxBottleGap = gap
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- Best priority tier among armed candidates that still need work, then
+    -- bottle-gap water-fill within that band.
+    local bestTier = nil
+    for i = 1, #candidates do
+        local t = tonumber(candidates[i].priorityTier) or 1
+        if bestTier == nil or t < bestTier then
+            bestTier = t
+        end
+    end
+    bestTier = tonumber(bestTier) or 1
+
+    local tierBand = {}
+    for i = 1, #candidates do
+        if (tonumber(candidates[i].priorityTier) or 1) == bestTier then
+            tierBand[#tierBand + 1] = candidates[i]
+        end
+    end
+
+    local maxGap = 0
+    for i = 1, #tierBand do
+        local gap = tonumber(tierBand[i].bottleGap) or 0
+        if gap > maxGap then
+            maxGap = gap
+        end
+    end
+    focus.maxBottleGap = maxGap
+    focus.bestPriorityTier = bestTier
+
+    local atMax = {}
+    for i = 1, #tierBand do
+        if (tonumber(tierBand[i].bottleGap) or 0) == maxGap then
+            atMax[#atMax + 1] = tierBand[i]
+            local c = tonumber(tierBand[i].craftable) or 0
+            if focus.minCraftable == nil or c < focus.minCraftable then
+                focus.minCraftable = c
+            end
+        end
+    end
+    -- Among max bottleGap: lowest craftable first (raise emptiest glasses).
+    table.sort(atMax, function(a, b)
+        local ca = tonumber(a and a.craftable) or 0
+        local cb = tonumber(b and b.craftable) or 0
+        if ca ~= cb then
+            return ca < cb
+        end
+        local ga = tonumber(a and a.bottleGap) or 0
+        local gb = tonumber(b and b.bottleGap) or 0
+        if ga ~= gb then
+            return ga > gb
+        end
+        return ToNarrow(a and a.name) < ToNarrow(b and b.name)
+    end)
+    -- Buy: keep all short watches for focus->fallback; Grow uses max-gap only.
+    -- Sort full list by tier then gap so fallback respects priority too.
+    if mode == "buy" then
+        table.sort(candidates, function(a, b)
+            local ta = tonumber(a and a.priorityTier) or 1
+            local tb = tonumber(b and b.priorityTier) or 1
+            if ta ~= tb then
+                return ta < tb
+            end
+            local ga = tonumber(a and a.bottleGap) or 0
+            local gb = tonumber(b and b.bottleGap) or 0
+            if ga ~= gb then
+                return ga > gb
+            end
+            local ca = tonumber(a and a.craftable) or 0
+            local cb = tonumber(b and b.craftable) or 0
+            if ca ~= cb then
+                return ca < cb
+            end
+            return ToNarrow(a and a.name) < ToNarrow(b and b.name)
+        end)
+        focus.allWatches = candidates
+    end
+    focus.watches = atMax
+    focus.fromPlan = type(planRows) == "table" and #planRows > 0
+    focus.planGen = planGen
+    Planner[cacheField] = focus
+    Planner[keyField] = cacheKey
+    return focus
+end
+
+----------------------------------------------------------------
+-- Grow focus helpers (unique bottleneck + seed-buffer lines)
+----------------------------------------------------------------
+
+--- Deficit remains and craftable does not yet cover target (or craftable is contested).
+--- Prefer polished plan-row fields (SoT); fall back to live craftable when no plan.
+local function WatchStillNeedsGrow(potion, recipe, target, watchKey)
+    target = tonumber(target) or 0
+    if target <= 0 or type(potion) ~= "table" then
+        return false
+    end
+    watchKey = tostring(watchKey or "")
+    local PS = StockPiler4.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    local rows = plan and plan.rows
+    if type(rows) == "table" and watchKey ~= "" then
+        for i = 1, #rows do
+            local row = rows[i]
+            if type(row) == "table" then
+                local rk = tostring(row.potionKey or row.potionRecipeKey or row.id or "")
+                if rk == watchKey then
+                    if (tonumber(row.potionDeficit) or 0) <= 0 then
+                        return false
+                    end
+                    local gap = tonumber(row.bottleGap)
+                    if gap == nil then
+                        gap = BottleGap(row.potionMin or row.target, row.potionHave, row.craftable)
+                    end
+                    if gap > 0 then
+                        return true
+                    end
+                    if row.craftableShared == true then
+                        return true
+                    end
+                    if tostring(row.statusKey or "") == "need_seeds" then
+                        return true
+                    end
+                    return false
+                end
+            end
+        end
+    end
+    local have = PotionHave(nil, potion, potion.outputUid)
+    local deficit = math.max(0, target - have)
+    if deficit <= 0 then
+        return false
+    end
+    local craftable = CountPotionsCraftable(recipe)
+    return have + craftable < target
+end
+
+local function FocusSpecKeys(focus)
+    local keys = {}
+    if type(focus) ~= "table" or type(focus.watches) ~= "table" then
+        return keys
+    end
+    local RS = RecipeSpec()
+    for i = 1, #focus.watches do
+        local recipe = focus.watches[i] and focus.watches[i].recipe
+        if type(recipe) == "table" then
+            if RS and RS.HydrateRecipeSlots then
+                RS.HydrateRecipeSlots(recipe)
+            end
+            local slots = recipe.slots
+            if type(slots) == "table" then
+                for j = 1, #slots do
+                    local spec = ResolveSlotSpec(slots[j])
+                    local k = SpecKey(spec)
+                    if k ~= nil then
+                        keys[k] = true
+                    end
+                end
+            end
+        end
+    end
+    return keys
+end
+
+--- Max bottleGap among focus watches where this spec is a limiting growable slot;
+--- focusShare = how many focus watches list the spec.
+local function FocusBottleneckForSpec(specKey, focus, demand)
+    specKey = tostring(specKey or "")
+    if specKey == "" or type(focus) ~= "table" or type(focus.watches) ~= "table" then
+        return 0, 0
+    end
+    local bestGap = 0
+    local shareCount = 0
+    local demandHave = nil
+    if type(demand) == "table" and type(demand[specKey]) == "table" then
+        demandHave = tonumber(demand[specKey].have)
+    end
+    local RS = RecipeSpec()
+    for i = 1, #focus.watches do
+        local fw = focus.watches[i]
+        local recipe = fw and fw.recipe
+        local slots = recipe and recipe.slots
+        if type(slots) == "table" then
+            local craftsPossible = CountCraftsPossibleMemo(recipe)
+            for j = 1, #slots do
+                local slot = slots[j]
+                local spec = ResolveSlotSpec(slot)
+                if type(spec) == "table" and SpecKey(spec) == specKey then
+                    shareCount = shareCount + 1
+                    local perCraft = EffectivePerCraft(slot, slots)
+                    local have = demandHave
+                    if have == nil then
+                        have = CountItemsMatchingSpec(spec)
+                    end
+                    have = tonumber(have) or 0
+                    local craftsHave = math.floor(have / perCraft)
+                    -- Limiting: this slot caps craftsPossible (or is short of need).
+                    if craftsHave <= craftsPossible then
+                        local gap = tonumber(fw.bottleGap) or 0
+                        if gap > bestGap then
+                            bestGap = gap
+                        end
+                    end
+                    break
+                end
+            end
+        end
+    end
+    return bestGap, shareCount
+end
+
+local function CollectAutoGrowSeedLines()
+    local snapGen = CurrentSnapGen()
+    local Watch = StockPiler4.Watch
+    local watchGen = Watch and Watch.GetGen and Watch.GetGen() or 0
+    local cacheKey = tostring(snapGen) .. ":" .. tostring(watchGen)
+    if type(Planner._seedLinesCache) == "table" and Planner._seedLinesCacheKey == cacheKey then
+        return Planner._seedLinesCache
+    end
+    local lines = {}
+    local seen = {}
+    local SM = StockPiler4.SeedMap
+    local MS = MaterialSpec()
+    local RS = RecipeSpec()
+    local watches = Watch and Watch.GetWatches and Watch.GetWatches() or {}
+    if type(watches) ~= "table" or type(SM) ~= "table" or not SM.IsGrowableSpec then
+        Planner._seedLinesCache = lines
+        Planner._seedLinesCacheKey = cacheKey
+        return lines
+    end
+    for watchKey, watch in pairs(watches) do
+        if WatchWantsAutoGrow(watchKey, watch) then
+            -- Include stocked watches: seed buffer protects the line even at potion target.
+            local recipe = RS and RS.RecipeSpecForPotion and RS.RecipeSpecForPotion(watchKey)
+            if type(recipe) == "table" then
+                if RS.HydrateRecipeSlots then
+                    RS.HydrateRecipeSlots(recipe)
+                end
+                local slots = recipe.slots or {}
+                for i = 1, #slots do
+                    local spec = ResolveSlotSpec(slots[i])
+                    if type(spec) == "table" and SM.IsGrowableSpec(spec) == true then
+                        if SM.IsOneWayHarvestSpec and SM.IsOneWayHarvestSpec(spec) == true then
+                            -- skip buffer lines for one-way
+                        else
+                            local productKey = SpecKey(spec)
+                                or (MS and MS.ProductKey and MS.ProductKey(spec))
+                                or ""
+                            if productKey ~= "" and seen[productKey] ~= true then
+                                local plantUid = 0
+                                if SM.FindPlantUidForSpec then
+                                    plantUid = tonumber(SM.FindPlantUidForSpec(spec)) or 0
+                                end
+                                local seedUid = 0
+                                local seed = nil
+                                -- Prefer skill-matched link (owned L1 must not become the buffer seed).
+                                if plantUid > 0 and SM.ResolveSeedUidForPlant then
+                                    seedUid = tonumber(SM.ResolveSeedUidForPlant(plantUid, spec)) or 0
+                                    if seedUid > 0 then
+                                        seed = { uniqueID = seedUid, plantUid = plantUid }
+                                    end
+                                end
+                                if seedUid <= 0 and SM.ResolveSeedForSpec then
+                                    seed = SM.ResolveSeedForSpec(spec)
+                                    if type(seed) == "table" then
+                                        seedUid = tonumber(seed.uniqueID) or 0
+                                        if plantUid <= 0 then
+                                            plantUid = tonumber(seed.plantUid) or 0
+                                        end
+                                    end
+                                end
+                                if seedUid <= 0 and plantUid > 0 and SM.PickBestSeedUid then
+                                    local seedUids = SM.GetSeedUidsForPlant and SM.GetSeedUidsForPlant(plantUid) or {}
+                                    seedUid = tonumber(SM.PickBestSeedUid(plantUid, seedUids, spec)) or 0
+                                end
+                                -- Same fallback as GrowReserveForSpec: linked seed even when
+                                -- not in bags (PickBestSeedUid requires a bag sample).
+                                if seedUid <= 0 and plantUid > 0 and SM.GetSeedUidsForPlant then
+                                    local seedUids = SM.GetSeedUidsForPlant(plantUid)
+                                    seedUid = type(seedUids) == "table" and (tonumber(seedUids[1]) or 0) or 0
+                                end
+                                if plantUid > 0 and seedUid > 0 then
+                                    seen[productKey] = true
+                                    lines[#lines + 1] = {
+                                        spec = spec,
+                                        specKey = productKey,
+                                        seedUid = seedUid,
+                                        plantUid = plantUid,
+                                        seed = seed or { uniqueID = seedUid, plantUid = plantUid },
+                                    }
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    -- Plant watches: same seed-buffer lines so plant_stock planting respects cushion.
+    local plantWatches = Watch and Watch.GetPlantWatches and Watch.GetPlantWatches() or {}
+    if type(plantWatches) == "table" then
+        for plantKey, watch in pairs(plantWatches) do
+            if type(watch) == "table" and watch.enabled == true
+                and (Watch.ShouldAutoGrowPlant == nil or Watch.ShouldAutoGrowPlant(plantKey) == true)
+            then
+                local plantUid = Watch.ParsePlantKey and Watch.ParsePlantKey(plantKey) or 0
+                plantUid = tonumber(plantUid) or 0
+                if plantUid > 0 then
+                    local Items = StockPiler4.Items
+                    local spec = Items and Items.ToSpec and Items.ToSpec(plantUid) or nil
+                    if type(spec) ~= "table" and MS and MS.FromUid then
+                        spec = MS.FromUid(plantUid)
+                    end
+                    if type(spec) == "table" and SM.IsGrowableSpec(spec) == true then
+                        if not (SM.IsOneWayHarvestSpec and SM.IsOneWayHarvestSpec(spec) == true) then
+                            local productKey = SpecKey(spec)
+                                or (MS and MS.ProductKey and MS.ProductKey(spec))
+                                or ("plant:" .. tostring(plantUid))
+                            if productKey ~= "" and seen[productKey] ~= true then
+                                local seedUid = 0
+                                local seed = nil
+                                if SM.ResolveSeedUidForPlant then
+                                    seedUid = tonumber(SM.ResolveSeedUidForPlant(plantUid, spec)) or 0
+                                end
+                                if seedUid <= 0 and SM.ResolveSeedForSpec then
+                                    seed = SM.ResolveSeedForSpec(spec)
+                                    if type(seed) == "table" then
+                                        seedUid = tonumber(seed.uniqueID) or 0
+                                    end
+                                end
+                                if seedUid <= 0 and SM.GetSeedUidsForPlant then
+                                    local seeds = SM.GetSeedUidsForPlant(plantUid)
+                                    if type(seeds) == "table" and #seeds > 0 then
+                                        seedUid = tonumber(seeds[1]) or 0
+                                    end
+                                end
+                                if seedUid > 0 then
+                                    seed = seed or { uniqueID = seedUid }
+                                end
+                                seen[productKey] = true
+                                lines[#lines + 1] = {
+                                    spec = spec,
+                                    specKey = productKey,
+                                    seedUid = seedUid,
+                                    plantUid = plantUid,
+                                    seed = seed,
+                                    plantStock = true,
+                                }
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    Planner._seedLinesCache = lines
+    Planner._seedLinesCacheKey = cacheKey
+    local Refine = StockPiler4.Refine
+    if Refine and Refine.InvalidateBufferFlags then
+        Refine.InvalidateBufferFlags()
+    end
+    return lines
+end
+
+----------------------------------------------------------------
+-- Shared craftable (deficit crafts only) - plan-row SoT
+----------------------------------------------------------------
+
+local function ApplyDeficitCraftableShared(rows)
+    local RS = RecipeSpec()
+    if RS and RS.ApplyDeficitCraftableShared then
+        RS.ApplyDeficitCraftableShared(rows)
+        if type(rows) == "table" then
+            for i = 1, #rows do
+                local row = rows[i]
+                if type(row) == "table" and (row.kind == "plant" or row.isPlantWatch == true) then
+                    row.craftableShared = false
+                    row.contestedSpecKeys = nil
+                end
+            end
+        end
+        return
+    end
+    if type(rows) ~= "table" then
+        return
+    end
+    local matUsers = {}
+    for i = 1, #rows do
+        local row = rows[i]
+        if type(row) == "table" then
+            if row.kind == "plant" or row.isPlantWatch == true then
+                row.craftableShared = false
+                row.contestedSpecKeys = nil
+            else
+            row.craftableShared = false
+            row.contestedSpecKeys = nil
+            local deficit = tonumber(row.potionDeficit) or 0
+            local craftable = tonumber(row.craftable) or 0
+            local potionKey = tostring(row.potionKey or row.potionRecipeKey or row.id or "")
+            -- Only AutoGrow-armed watches compete for mats. Manual/off watches stay brewable
+            -- without flipping siblings to "Shared materials".
+            local armed = WatchWantsAutoGrow(potionKey, nil)
+            if armed and deficit > 0 and craftable > 0 and type(row.recipe) == "table" then
+                local recipe = row.recipe
+                if RS and RS.HydrateRecipeSlots then
+                    RS.HydrateRecipeSlots(recipe)
+                end
+                local slots = recipe.slots
+                if type(slots) == "table" then
+                    local craftsPossible = tonumber(row.craftsPossible) or 0
+                    local craftsNeeded = tonumber(row.craftsNeeded) or CraftsNeededForDeficit(deficit, recipe)
+                    local crafts = math.min(craftsPossible, craftsNeeded)
+                    row.craftsClaim = crafts
+                    for s = 1, #slots do
+                        local slot = slots[s]
+                        local spec = ResolveSlotSpec(slot)
+                        local specKey = SpecKey(spec)
+                        if type(specKey) == "string" then
+                            local list = matUsers[specKey]
+                            if list == nil then
+                                list = {}
+                                matUsers[specKey] = list
+                            end
+                            list[#list + 1] = {
+                                infoIdx = i,
+                                perCraft = EffectivePerCraft(slot, slots),
+                                crafts = crafts,
+                                spec = spec,
+                            }
+                        end
+                    end
+                end
+            end
+            end
+        end
+    end
+    for i = 1, #rows do
+        local row = rows[i]
+        local potionKey = type(row) == "table"
+            and tostring(row.potionKey or row.potionRecipeKey or row.id or "") or ""
+        if type(row) == "table"
+            and row.kind ~= "plant" and row.isPlantWatch ~= true
+            and WatchWantsAutoGrow(potionKey, nil)
+            and (tonumber(row.potionDeficit) or 0) > 0
+            and (tonumber(row.craftable) or 0) > 0
+            and type(row.recipe) == "table"
+        then
+            local contested = false
+            local contestedSpecKeys = {}
+            local slots = row.recipe.slots
+            if type(slots) == "table" then
+                for s = 1, #slots do
+                    local spec = ResolveSlotSpec(slots[s])
+                    local specKey = SpecKey(spec)
+                    local users = type(specKey) == "string" and matUsers[specKey] or nil
+                    if type(users) == "table" and #users > 1 then
+                        local combinedNeed = 0
+                        for u = 1, #users do
+                            combinedNeed = combinedNeed + users[u].crafts * users[u].perCraft
+                        end
+                        local have = CountItemsMatchingSpec(spec)
+                        if have < combinedNeed then
+                            contested = true
+                            contestedSpecKeys[specKey] = true
+                        end
+                    end
+                end
+            end
+            row.craftableShared = contested
+            row.contestedSpecKeys = contested and contestedSpecKeys or nil
+            -- Tip note override: contested -> (Shared)
+            if contested and type(row.statusTipSlots) == "table" then
+                for t = 1, #row.statusTipSlots do
+                    local e = row.statusTipSlots[t]
+                    if type(e) == "table" then
+                        local k = SpecKey(e.spec)
+                        if k ~= nil and contestedSpecKeys[k] == true then
+                            e.note = "(Shared)"
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+--- Contested specs that are all non-growable -> "flasks" | "materials" | nil (growable contest).
+local function ContestedBuyOnlyKind(row)
+    if type(row) ~= "table" or row.craftableShared ~= true then
+        return nil
+    end
+    local contested = row.contestedSpecKeys
+    if type(contested) ~= "table" then
+        return nil
+    end
+    local slots = row.recipe and row.recipe.slots
+    if type(slots) ~= "table" then
+        return nil
+    end
+    local anyContested = false
+    local anyGrowable = false
+    local anyContainer = false
+    for i = 1, #slots do
+        local slot = slots[i]
+        local spec = ResolveSlotSpec(slot)
+        local sk = SpecKey(spec)
+        if type(sk) == "string" and contested[sk] == true then
+            anyContested = true
+            local role = slot.role or (type(spec) == "table" and spec.role) or nil
+            if SpecIsHarvestByproduct(spec) ~= true and SpecIsGrowable(spec, role) == true then
+                anyGrowable = true
+            elseif tostring(role or "") == "container" then
+                anyContainer = true
+            end
+        end
+    end
+    if not anyContested or anyGrowable then
+        return nil
+    end
+    if anyContainer then
+        return "flasks"
+    end
+    return "materials"
+end
+
+local function PaintBuyOnlySharedStatus(row, kind)
+    row.statusKey = "buy_ingredients"
+    if kind == "flasks" then
+        row.statusText = T("watch.note.buy_flasks")
+        row.statusLines = { T("watch.note.shared_buy_flasks") }
+    else
+        row.statusText = T("plan.status.buy_ingredients")
+        row.statusLines = { T("watch.note.shared_buy") }
+    end
+end
+
+local function PaintSharedMaterialsStatus(row)
+    row.statusKey = "ready_to_craft_shared"
+    row.statusText = T("plan.status.ready_to_craft_shared")
+    row.statusLines = { T("watch.note.shared") }
+end
+
+local function RowCoveredForReady(row)
+    local have = tonumber(row.potionHave) or 0
+    local craftable = tonumber(row.craftable) or 0
+    local target = tonumber(row.potionMin) or tonumber(row.target) or 0
+    return target > 0 and (have + craftable) >= target
+end
+
+--- Ready <-> Shared / buy-only-shared paint from craftableShared (armed watches only).
+--- Buy-only contests paint Buy flasks/materials (craftableShared stays true -> AutoBrew blocked).
+--- Returns true when any row's shared flag or statusKey changed.
+local function ApplySharedStatusFlip(rows)
+    if type(rows) ~= "table" then
+        return false
+    end
+    local changed = false
+    for i = 1, #rows do
+        local row = rows[i]
+        if type(row) == "table" then
+            local prevKey = tostring(row.statusKey or "")
+            local prevShared = row.craftableShared == true
+            local key = prevKey
+            local pk = tostring(row.potionKey or row.potionRecipeKey or row.id or "")
+            local armed = WatchWantsAutoGrow(pk, nil)
+            local sharedPaintKeys = key == "ready_to_craft"
+                or key == "ready_to_craft_shared"
+                or (key == "buy_ingredients" and RowCoveredForReady(row))
+            if row.craftableShared == true and armed and sharedPaintKeys then
+                local buyKind = ContestedBuyOnlyKind(row)
+                if buyKind ~= nil then
+                    PaintBuyOnlySharedStatus(row, buyKind)
+                else
+                    PaintSharedMaterialsStatus(row)
+                end
+            elseif key == "ready_to_craft" and row.craftableShared == true and not armed then
+                row.craftableShared = false
+                row.contestedSpecKeys = nil
+            elseif key == "ready_to_craft_shared"
+                and (row.craftableShared ~= true or not armed)
+            then
+                row.craftableShared = false
+                row.contestedSpecKeys = nil
+                row.statusKey = "ready_to_craft"
+                row.statusText = T("plan.status.ready_to_craft")
+                row.statusLines = { T("brew.ready", { name = row.name or T("brew.potion_fallback") }) }
+            elseif key == "buy_ingredients"
+                and row.craftableShared ~= true
+                and armed
+                and RowCoveredForReady(row)
+            then
+                -- Shared buy paint cleared after vendor fill -> Ready (AutoBrew can run).
+                row.contestedSpecKeys = nil
+                row.statusKey = "ready_to_craft"
+                row.statusText = T("plan.status.ready_to_craft")
+                row.statusLines = { T("brew.ready", { name = row.name or T("brew.potion_fallback") }) }
+            end
+            if tostring(row.statusKey or "") ~= prevKey or (row.craftableShared == true) ~= prevShared then
+                changed = true
+            end
+        end
+    end
+    return changed
+end
+
+--- Cheap Shared contest + Ready/Shared paint. Safe on live craftable/deficit patches.
+local function PolishSharedContest(rows)
+    ApplyDeficitCraftableShared(rows)
+    return ApplySharedStatusFlip(rows) == true
+end
+
+local function StampBottleGap(row)
+    if type(row) ~= "table" then
+        return
+    end
+    row.bottleGap = BottleGap(
+        row.potionMin or row.target,
+        row.potionHave,
+        row.craftable
+    )
+end
+
+local function InvalidateFocusCaches()
+    Planner._autoGrowFocusCache = nil
+    Planner._autoGrowFocusKey = nil
+    Planner._autoBuyFocusCache = nil
+    Planner._autoBuyFocusKey = nil
+    -- Demand was keyed only on snap/watch gen; empty demand cached while gap=0 then
+    -- plan craftable/gap moved (same snap) left AutoGrow with plantJob=nil no-demand-short.
+    Planner._demandCache = nil
+    Planner._demandCacheKey = nil
+end
+
+----------------------------------------------------------------
+-- Status helpers
+----------------------------------------------------------------
+
+local function SetMaterialsShortStatus(row, growable, buyLabel)
+    if growable == true and CanAutoGrowSkill() then
+        local key = nil
+        local watch = nil
+        if type(row) == "table" then
+            key = row.potionKey or row.potionRecipeKey or row.id
+            -- Keep row.autoGrow aligned with the watch store (live rows can drift).
+            watch = ResolveWatchRow(key, nil)
+            if type(watch) == "table" then
+                row.autoGrow = watch.autoGrow == true
+            end
+        end
+        -- Single source of truth: master + per-watch + enabled.
+        if WatchWantsAutoGrow(key, watch) then
+            row.statusKey = "restocking"
+            row.statusText = T("plan.status.restocking")
+            row.statusLines = nil
+            return
+        end
+        row.statusKey = "enable_autogrow"
+        row.statusText = T("plan.status.enable_autogrow")
+        row.statusLines = nil
+        return
+    end
+    row.statusKey = "buy_ingredients"
+    row.statusText = buyLabel or T("plan.status.buy_ingredients")
+    row.statusLines = nil
+end
+
+--- After live patches / toggle: Enable AutoGrow <-> Restocking must track current toggles.
+--- Also demotes Seed buffer -> Enable AutoGrow when master/per-watch AutoGrow turns off.
+--- Plant stock waits only while potion watches still need Cult grow (soft gate).
+--- Optional rows: in-build potion rows so we do not read a stale PlanSnapshot.
+local function PlantWatchesAwaitPotions(rows)
+    local Watch = StockPiler4.Watch
+    if Watch and Watch.EnabledPotionWatchesNeedCultGrow then
+        return Watch.EnabledPotionWatchesNeedCultGrow(rows) == true
+    end
+    if not (Watch and Watch.AllEnabledPotionWatchesStocked) then
+        return false
+    end
+    return Watch.AllEnabledPotionWatchesStocked() ~= true
+end
+
+local function ReconcileAutoGrowStatus(row)
+    if type(row) ~= "table" then
+        return false
+    end
+    if row.skillUp == true or row.addonOwned == true then
+        return false
+    end
+    -- Plant watches: flip Enable AutoGrow <-> Restocking / Stocked immediately on toggle.
+    -- Full seed-buffer / Upgrade Seed paint waits for ApplyPlantWatchStatus (live patch / rebuild).
+    if row.kind == "plant" or row.isPlantWatch == true then
+        local Watch = StockPiler4.Watch
+        local plantKey = row.plantKey or row.id or row.potionKey
+        local armed = Watch and Watch.ShouldAutoGrowPlant
+            and Watch.ShouldAutoGrowPlant(plantKey) == true
+        row.autoGrow = armed == true
+        local key = tostring(row.statusKey or "")
+        local deficit = tonumber(row.potionDeficit) or 0
+        local prev = key
+        if deficit <= 0 then
+            if PlantSeedBufferShort(row.seedUid, row.plantUid, row.spec) then
+                row.statusKey = "need_seeds"
+                row.statusText = T("plan.status.need_seeds")
+                row.statusLines = {
+                    T("tip.watch.seed_buffer"),
+                }
+            else
+                row.statusKey = "plant_stocked"
+                row.statusText = T("plan.status.plant_stocked")
+                row.statusLines = nil
+            end
+        elseif not armed then
+            row.statusKey = "enable_autogrow"
+            row.statusText = T("plan.status.enable_autogrow")
+            row.statusLines = nil
+        elseif key == "enable_autogrow" or key == "waiting_potions" or key == "restocking" then
+            if PlantWatchesAwaitPotions() then
+                row.statusKey = "waiting_potions"
+                row.statusText = T("plan.status.waiting_potions")
+                row.statusLines = {
+                    T("tip.watch.plant_waiting_potions"),
+                }
+            else
+                row.statusKey = "restocking"
+                row.statusText = T("plan.status.restocking")
+                row.statusLines = nil
+            end
+        end
+        return tostring(row.statusKey or "") ~= prev
+    end
+    local key = tostring(row.statusKey or "")
+    if key ~= "enable_autogrow" and key ~= "restocking" and key ~= "need_seeds"
+        and key ~= "upgrading_seed"
+    then
+        return false
+    end
+    if not CanAutoGrowSkill() then
+        return false
+    end
+    local potionKey = row.potionKey or row.potionRecipeKey or row.id
+    local watch = ResolveWatchRow(potionKey, nil)
+    if type(watch) == "table" then
+        row.autoGrow = watch.autoGrow == true
+    end
+    local armed = WatchWantsAutoGrow(potionKey, watch)
+    local prev = key
+    if armed and key == "enable_autogrow" then
+        row.statusKey = "restocking"
+        row.statusText = T("plan.status.restocking")
+        row.statusLines = nil
+    elseif (not armed) and (key == "restocking" or key == "need_seeds" or key == "upgrading_seed") then
+        row.statusKey = "enable_autogrow"
+        row.statusText = T("plan.status.enable_autogrow")
+        row.statusLines = nil
+    end
+    return tostring(row.statusKey or "") ~= prev
+end
+
+--- Immediate Enable<->Restocking flip after master/per-watch AutoGrow toggles (no rebuild wait).
+local function ReconcileAutoGrowStatusesForRows(rows)
+    if type(rows) ~= "table" then
+        return false
+    end
+    local changed = false
+    for i = 1, #rows do
+        if ReconcileAutoGrowStatus(rows[i]) then
+            changed = true
+        end
+    end
+    return changed
+end
+
+local StampRowSeedBufferUids
+
+local function ApplySeedBufferStatus(row)
+    local buffer = 5
+    local Watch = StockPiler4.Watch
+    if Watch and Watch.GetSeedBufferMin then
+        buffer = tonumber(Watch.GetSeedBufferMin()) or 5
+    end
+    local US = StockPiler4.UpgradeSeed
+    local climb = nil
+    local climbs = nil
+    local isPlantWatch = row.isPlantWatch == true or row.kind == "plant"
+    if US and US.IsEnabled and US.IsEnabled() == true and not isPlantWatch then
+        -- Plant watches: stock / seed-buffer UI only. Climb status lives on
+        -- ephemeral Upgrade rows (was painting "Upgrading marshroot" on the watch).
+        if (tonumber(row.plantUid) or 0) > 0 then
+            climb = US.StatusForPlant and US.StatusForPlant(row.plantUid, row.spec) or nil
+        else
+            -- Potion rows: only climbs for THIS watch's seeds/plants - never
+            -- ListClimbStatuses()[1] (was painting "Upgrading fusk" on every short row).
+            StampRowSeedBufferUids(row)
+            local seedSet = {}
+            local plantSet = {}
+            local uids = row.seedBufferSeedUids
+            if type(uids) == "table" then
+                for i = 1, #uids do
+                    local u = tonumber(uids[i]) or 0
+                    if u > 0 then
+                        seedSet[u] = true
+                    end
+                end
+            end
+            local tips = row.statusTipSlots
+            if type(tips) == "table" then
+                for i = 1, #tips do
+                    local tip = tips[i]
+                    if type(tip) == "table" then
+                        local su = tonumber(tip.seedUid) or 0
+                        local pu = tonumber(tip.plantUid) or 0
+                        if su > 0 then
+                            seedSet[su] = true
+                        end
+                        if pu > 0 then
+                            plantSet[pu] = true
+                        end
+                    end
+                end
+            end
+            local all = US.ListClimbStatuses and US.ListClimbStatuses() or nil
+            if type(all) == "table" and #all > 0 then
+                climbs = {}
+                for i = 1, #all do
+                    local c = all[i]
+                    if type(c) == "table" then
+                        local su = tonumber(c.seedUid) or 0
+                        local pu = tonumber(c.plantUid) or 0
+                        if (su > 0 and seedSet[su] == true) or (pu > 0 and plantSet[pu] == true) then
+                            climbs[#climbs + 1] = c
+                        end
+                    end
+                end
+                if #climbs > 0 then
+                    climb = climbs[1]
+                else
+                    climbs = nil
+                end
+            end
+        end
+    end
+    if type(climb) == "table" and (climb.why == "planting" or climb.why == "refining"
+        or climb.why == "need_buy" or climb.why == "need_cult" or climb.why == "no_family"
+        or climb.why == "climbing")
+    then
+        row.statusKey = "upgrading_seed"
+        local genus = tostring(climb.genus or "seed")
+        local haveReq = tonumber(climb.haveReq) or 0
+        local needReq = tonumber(climb.needReq) or 0
+        local climbCap = tonumber(climb.climbCap) or 0
+        if climbCap < 1 then
+            climbCap = US.ClimbCap and US.ClimbCap(needReq) or needReq
+        end
+        local capShow = climbCap
+        if needReq > 0 and needReq < capShow then
+            capShow = needReq
+        end
+        local multi = type(climbs) == "table" and #climbs > 1
+        if multi then
+            -- Compact row label; per-slot Have/Need notes carry each genus.
+            local names = {}
+            for i = 1, #climbs do
+                local g = tostring(climbs[i].genus or "")
+                if g ~= "" then
+                    names[#names + 1] = g
+                end
+            end
+            if #names > 0 then
+                row.statusText = T("plan.status.upgrading_seed_multi", {
+                    genera = table.concat(names, "+"),
+                    count = tostring(#names),
+                })
+            else
+                row.statusText = T("plan.status.upgrading_seed")
+            end
+        else
+            row.statusText = T("plan.status.upgrading_seed_progress", {
+                genus = genus,
+                have = tostring(haveReq),
+                cap = tostring(capShow),
+            })
+        end
+        -- Detail lives on tip slot Have/Need notes (FormatClimbSlotNote).
+        local lines = {}
+        local autoGrowOn = Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() == true
+        if autoGrowOn ~= true then
+            lines[#lines + 1] = T("plan.status.upgrading_seed_autogrow_off")
+        end
+        lines[#lines + 1] = T("tip.watch.upgrade_seeds")
+        row.statusLines = lines
+        row.craftableShared = false
+        return
+    end
+    row.statusKey = "need_seeds"
+    row.statusText = T("plan.status.need_seeds")
+    row.statusLines = {
+        T("tip.watch.seed_buffer"),
+        towstring("buffer=" .. tostring(buffer)),
+    }
+    row.craftableShared = false
+end
+
+--- All growable seed UIDs for this watch (recipe slots + tip). Shared mats across
+--- watches must appear here so a short cushion demotes every sharing row.
+--- Hot path: tip / prior stamp first; ResolveSeedForSpec only on cold miss.
+StampRowSeedBufferUids = function(row)
+    if type(row) ~= "table" then
+        return
+    end
+    local snapGen = CurrentSnapGen()
+    local prior = row.seedBufferSeedUids
+    if type(prior) == "table" and #prior > 0
+        and snapGen > 0
+        and tonumber(row._seedBufferUidSnapGen) == snapGen
+    then
+        return
+    end
+    local uids = {}
+    local seen = {}
+    local function add(uid)
+        uid = tonumber(uid) or 0
+        if uid > 0 and seen[uid] ~= true then
+            seen[uid] = true
+            uids[#uids + 1] = uid
+        end
+    end
+    -- Prefer plan tip seedUids (already resolved during status tip build).
+    local tips = row.statusTipSlots
+    if type(tips) == "table" then
+        for i = 1, #tips do
+            local tip = tips[i]
+            if type(tip) == "table" then
+                add(tip.seedUid)
+            end
+        end
+    end
+    -- Cold miss only: ResolveSeed when tips did not yield any seed UIDs.
+    if #uids == 0 then
+        local RS = RecipeSpec()
+        local SM = StockPiler4.SeedMap
+        local recipe = row.recipe or row.specRecipe
+        if type(recipe) == "table" and SM and SM.IsGrowableSpec then
+            if RS and RS.HydrateRecipeSlots then
+                RS.HydrateRecipeSlots(recipe)
+            end
+            local slots = recipe.slots or {}
+            for i = 1, #slots do
+                local slot = slots[i]
+                local spec = ResolveSlotSpec(slot)
+                if type(spec) == "table" and SM.IsGrowableSpec(spec) == true then
+                    if not (SM.IsOneWayHarvestSpec and SM.IsOneWayHarvestSpec(spec) == true) then
+                        local seedUid = 0
+                        if SM.ResolveSeedForSpec then
+                            local seed = SM.ResolveSeedForSpec(spec)
+                            if type(seed) == "table" then
+                                seedUid = tonumber(seed.uniqueID or seed.uid) or 0
+                            end
+                        end
+                        add(seedUid)
+                    end
+                end
+            end
+        end
+    end
+    row.seedBufferSeedUids = uids
+    row._seedBufferUidSnapGen = snapGen
+end
+
+local function SeedBufferShort(recipe, potionKey, row)
+    local RS = RecipeSpec()
+    if type(recipe) ~= "table" then
+        return false
+    end
+    if not WatchWantsAutoGrow(potionKey, nil) then
+        return false
+    end
+    local Watch = StockPiler4.Watch
+    if not (Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true) then
+        return false
+    end
+    -- Stocked watches still enforce buffer (protect seed lines from exhaustion).
+    if RS and RS.WatchHasSeedBufferShort then
+        if type(row) == "table" then
+            local snapGen = CurrentSnapGen()
+            local prior = row.seedBufferSeedUids
+            local stamped = type(prior) == "table" and #prior > 0
+                and snapGen > 0
+                and tonumber(row._seedBufferUidSnapGen) == snapGen
+            if not stamped then
+                StampRowSeedBufferUids(row)
+            end
+        end
+        local seedUids = type(row) == "table" and row.seedBufferSeedUids or nil
+        return RS.WatchHasSeedBufferShort(recipe, { seedUids = seedUids }) == true
+    end
+    return false
+end
+
+--- If any seed cushion is short, stamp seedBufferShort on every AutoGrow watch that
+--- uses that seed. Only demote Ready / Stocked -> Seed buffer - never overwrite Buy
+--- flasks/seeds/materials when bags are the real blocker.
+local function PropagateSharedSeedBufferStatus(rows)
+    if type(rows) ~= "table" or #rows == 0 then
+        return false
+    end
+    local Watch = StockPiler4.Watch
+    if not (Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true) then
+        return false
+    end
+    local buffer = Watch.GetSeedBufferMin and tonumber(Watch.GetSeedBufferMin()) or 5
+    local Refine = StockPiler4.Refine
+    local shortUids = {}
+    local anyShort = false
+    for i = 1, #rows do
+        local row = rows[i]
+        if type(row) == "table" then
+            local pk = row.potionKey or row.potionRecipeKey or row.id
+            if WatchWantsAutoGrow(pk, nil) then
+                StampRowSeedBufferUids(row)
+                local uids = row.seedBufferSeedUids
+                if type(uids) == "table" then
+                    for u = 1, #uids do
+                        local uid = tonumber(uids[u]) or 0
+                        if uid > 0 and shortUids[uid] == nil then
+                            local credit = 0
+                            if Refine and Refine.GetSeedBudget then
+                                local budget = Refine.GetSeedBudget(uid)
+                                credit = tonumber(budget and budget.credit) or 0
+                            else
+                                local Inv = StockPiler4.Inventory
+                                credit = Inv and Inv.CountByUid and tonumber(Inv.CountByUid(uid)) or 0
+                            end
+                            if credit < buffer then
+                                shortUids[uid] = true
+                                anyShort = true
+                            else
+                                shortUids[uid] = false
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    if not anyShort then
+        return false
+    end
+    local changed = false
+    for i = 1, #rows do
+        local row = rows[i]
+        if type(row) == "table" then
+            local pk = row.potionKey or row.potionRecipeKey or row.id
+            if WatchWantsAutoGrow(pk, nil) then
+                local uids = row.seedBufferSeedUids
+                local hit = false
+                if type(uids) == "table" then
+                    for u = 1, #uids do
+                        if shortUids[tonumber(uids[u]) or 0] == true then
+                            hit = true
+                            break
+                        end
+                    end
+                end
+                if hit then
+                    row.seedBufferShort = true
+                    row.craftableSafe = (tonumber(row.craftable) or 0) > 0 and false
+                    local prev = tostring(row.statusKey or "")
+                    -- Ready/stocked only: buffer gates brew, not buy shortages.
+                    if prev == "ready_to_craft"
+                        or prev == "ready_to_craft_shared"
+                        or prev == "potion_stocked"
+                    then
+                        ApplySeedBufferStatus(row)
+                        changed = true
+                    end
+                end
+            end
+        end
+    end
+    return changed
+end
+
+--- Craftable column safety: green only when bags can craft and seed cushion is met.
+local function StampCraftableSafety(row)
+    if type(row) ~= "table" then
+        return
+    end
+    local pk = row.potionKey or row.potionRecipeKey or row.id
+    local short = SeedBufferShort(row.recipe or row.specRecipe, pk, row) == true
+    row.seedBufferShort = short
+    local craftable = tonumber(row.craftable) or 0
+    -- Safe (green): craftable > 0 and buffer not short. Shared mats do not block green.
+    row.craftableSafe = craftable > 0 and not short
+end
+
+local function ApplyNeedApothecaryStatus(row)
+    if row.statusKey ~= "ready_to_craft" and row.statusKey ~= "ready_to_craft_shared" then
+        return
+    end
+    if not CanBrewPotionsSkill() then
+        row.statusKey = "need_apothecary"
+        row.statusText = T("plan.status.need_apothecary")
+    end
+end
+
+local function ApplyNeedSkillStatus(row)
+    local RS = RecipeSpec()
+    if not RS or not RS.RecipeSkillRequirements then
+        return
+    end
+    if row.statusKey ~= "ready_to_craft" and row.statusKey ~= "ready_to_craft_shared" then
+        return
+    end
+    local req = RS.RecipeSkillRequirements(row.recipe)
+    if type(req) ~= "table" then
+        return
+    end
+    local Caps = StockPiler4.TradeSkillCaps
+    local apo = Caps and Caps.GetApoSkill and Caps.GetApoSkill() or 0
+    local need = tonumber(req.apothecary) or tonumber(req.apo) or 0
+    if need > 0 and apo < need then
+        row.statusKey = "need_skill"
+        row.statusText = T("plan.status.need_skill")
+    end
+end
+
+local function ApplyReadyStatus(row)
+    local pk = type(row) == "table" and (row.potionKey or row.potionRecipeKey or row.id) or nil
+    -- With Cultivation: covered but AutoGrow off -> Enable AutoGrow (not Ready).
+    -- Apo-only: Ready whenever bags cover the craft (manual + AutoBrew).
+    if CanAutoGrowSkill() and not WatchWantsAutoGrow(pk, nil) then
+        row.statusKey = "enable_autogrow"
+        row.statusText = T("plan.status.enable_autogrow")
+        row.craftableShared = false
+        row.statusLines = nil
+        return
+    end
+    row.statusKey = "ready_to_craft"
+    row.statusText = T("plan.status.ready_to_craft")
+    row.craftableShared = false
+    if CanBrewPotionsSkill() then
+        row.statusLines = { T("brew.ready", { name = row.name or T("brew.potion_fallback") }) }
+    else
+        row.statusLines = { T("brew.requires_apo") }
+    end
+end
+
+local function ApplyStockedStatus(row)
+    row.statusKey = "potion_stocked"
+    row.statusText = T("plan.status.potion_stocked")
+    row.statusLines = { T("watch.note.stocked") }
+    row.craftableShared = false
+end
+
+local function ApplySpecPlanStatus(row, target, recipe, demand)
+    row.statusLines = nil
+    row.statusTipSlots = nil
+    row.statusSlots = nil
+    if (tonumber(target.min) or 0) <= 0 then
+        row.statusKey = "no_target"
+        row.statusText = T("plan.status.no_target")
+        return
+    end
+    if recipe == nil then
+        row.statusKey = "no_recipe"
+        row.statusText = T("plan.status.no_recipe")
+        return
+    end
+    if (tonumber(target.deficit) or 0) <= 0 then
+        -- At/above potion target: Seed buffer until cushion is met, else Potions stocked.
+        if SeedBufferShort(recipe, target.potionKey, row) then
+            ApplySeedBufferStatus(row)
+        else
+            ApplyStockedStatus(row)
+        end
+        return
+    end
+    local craftsNeeded = CraftsNeededForDeficit(target.deficit, recipe)
+    row.craftsNeeded = craftsNeeded
+    row.recipeYield = RecipeYield(recipe)
+
+    local covered = false
+    local RS = RecipeSpec()
+    if RS and RS.WatchCoveredByBagsAndCraftable then
+        covered = RS.WatchCoveredByBagsAndCraftable(target.entry, recipe, target.min) == true
+    else
+        local craftable = CountPotionsCraftable(recipe)
+        covered = (tonumber(target.have) or 0) + craftable >= (tonumber(target.min) or 0)
+    end
+    if covered then
+        if SeedBufferShort(recipe, target.potionKey, row) then
+            ApplySeedBufferStatus(row)
+            return
+        end
+        ApplyReadyStatus(row)
+        return
+    end
+
+    local slots = recipe.slots or {}
+    local allEntries = {}
+    local limiting, containerShort, vendorShort, byproductShort
+    local plantShort, convertShort, buyShort = {}, {}, {}
+    for i = 1, #slots do
+        local entry = RecipeSlotPlanEntry(slots[i], slots, craftsNeeded, demand)
+        if entry ~= nil then
+            allEntries[#allEntries + 1] = entry
+            if entry.deficit > 0 then
+                if entry.kind == "buy" and entry.role == "container" then
+                    containerShort = entry
+                    buyShort[#buyShort + 1] = entry
+                elseif entry.kind == "convert" then
+                    byproductShort = byproductShort or entry
+                    convertShort[#convertShort + 1] = entry
+                elseif entry.kind == "plant" then
+                    limiting = limiting or entry
+                    plantShort[#plantShort + 1] = entry
+                else
+                    vendorShort = vendorShort or entry
+                    buyShort[#buyShort + 1] = entry
+                end
+            end
+        end
+    end
+    row.statusTipSlots = allEntries
+    StampRowSeedBufferUids(row)
+
+    -- Ready only when have+craftable covers target (see covered early-return above).
+    -- Partial craftable with bottleGap>0 -> Restocking / Buy, so AutoGrow can fill first.
+
+    -- Prefer Refine / Seed buffer over Buy seeds when refinable plants remain.
+    -- Seed buffer status only when buffer is actually short for this watch (has seed lines).
+    if limiting ~= nil and limiting.needsRefine == true then
+        if SeedBufferShort(recipe, target.potionKey, row) then
+            ApplySeedBufferStatus(row)
+        else
+            SetMaterialsShortStatus(row, true, T("plan.status.buy_ingredients"))
+        end
+        row.specDeficit = limiting
+        return
+    end
+    if limiting ~= nil then
+        row.specDeficit = limiting
+        local buyLabel = T("plan.status.buy_ingredients")
+        if limiting.buySeedOrMat == true and (tonumber(limiting.seedUid) or 0) > 0 then
+            buyLabel = T("watch.note.buy_seeds")
+        end
+        -- Plant short is growable: master off -> Enable AutoGrow, master on -> Restocking.
+        SetMaterialsShortStatus(row, true, buyLabel)
+        return
+    end
+    if byproductShort ~= nil then
+        -- Byproduct short with no plant feedstock -> red buy, not yellow restocking.
+        local hasFeedstock = false
+        for i = 1, #allEntries do
+            local e = allEntries[i]
+            if type(e) == "table" and e.kind == "plant" and (tonumber(e.have) or 0) > 0 then
+                hasFeedstock = true
+                break
+            end
+        end
+        if hasFeedstock then
+            SetMaterialsShortStatus(row, true, T("plan.status.buy_ingredients"))
+        else
+            row.statusKey = "buy_ingredients"
+            row.statusText = T("plan.status.buy_ingredients")
+        end
+        row.specDeficit = byproductShort
+        return
+    end
+    -- Seed buffer before container/vendor buy paint (matches DemoteToMaterialsShort).
+    -- Otherwise Publish paints Buy flasks then live patch flips to Seed buffer - stall chat lies.
+    if SeedBufferShort(recipe, target.potionKey, row) then
+        ApplySeedBufferStatus(row)
+        return
+    end
+    -- Container-only short (craftable==0) -> Buy flasks, not Restocking.
+    if containerShort ~= nil then
+        row.statusKey = "buy_ingredients"
+        row.statusText = T("watch.note.buy_flasks")
+        row.specDeficit = containerShort
+        return
+    end
+    if vendorShort ~= nil or #buyShort > 0 then
+        row.statusKey = "buy_ingredients"
+        row.statusText = T("plan.status.buy_ingredients")
+        return
+    end
+    -- Tip slots look covered (raw Have) but craftable may still be 0 under grow reserve,
+    -- or partial craftable remains with bottleGap>0 (not Ready until covered).
+    -- Growable short / partial craftable: gate on skill only; master toggle picks Enable vs Restocking.
+    if CanAutoGrowSkill() then
+        SetMaterialsShortStatus(row, true, nil)
+        row.specDeficit = row.specDeficit or limiting or byproductShort or containerShort or vendorShort
+        return
+    end
+    row.statusKey = "buy_ingredients"
+    row.statusText = T("plan.status.buy_ingredients")
+    row.specDeficit = row.specDeficit or containerShort or limiting or byproductShort or vendorShort
+end
+
+local function ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, target)
+    local key = tostring(row.statusKey or "")
+    local potionKey = row.potionRecipeKey or row.id or row.potionKey
+    local flippable = key == "ready_to_craft"
+        or key == "ready_to_craft_shared"
+        or key == "potion_stocked"
+        or key == "need_seeds"
+        or key == "upgrading_seed"
+        or key == "restocking"
+        or key == "buy_ingredients"
+        or key == "enable_autogrow"
+        or key == "need_skill"
+        or key == "need_apothecary"
+    if not flippable then
+        return
+    end
+
+    local function LiveSlotHave(spec, role, slot)
+        local count = CountItemsMatchingSpec(spec, { cacheOnly = true })
+        if count ~= nil then
+            return count
+        end
+        -- Cold path: ProductMatches / RS count (never uid-only for complete containers).
+        return CountItemsMatchingSpec(spec)
+    end
+
+    local function DemoteToMaterialsShort()
+        if SeedBufferShort(recipe, potionKey, row) then
+            ApplySeedBufferStatus(row)
+            return
+        end
+        local slots = type(recipe) == "table" and recipe.slots or nil
+        local craftsNeeded = tonumber(row.craftsNeeded) or 0
+        if craftsNeeded <= 0 and deficit > 0 then
+            craftsNeeded = CraftsNeededForDeficit(deficit, recipe)
+        end
+        if craftsNeeded < 1 then
+            craftsNeeded = 1
+        end
+        local growableShort, containerShort, buyShort, anyGrowable = false, false, false, false
+        if type(slots) == "table" then
+            for i = 1, #slots do
+                local slot = slots[i]
+                local spec = ResolveSlotSpec(slot)
+                if type(spec) == "table" then
+                    local role = slot.role
+                    local need = craftsNeeded * EffectivePerCraft(slot, slots)
+                    local slotHave = LiveSlotHave(spec, role, slot)
+                    if SpecIsGrowable(spec, role) then
+                        anyGrowable = true
+                        if slotHave ~= nil and slotHave < need then
+                            growableShort = true
+                        end
+                    elseif role == "container" then
+                        if slotHave ~= nil and slotHave < need then
+                            containerShort = true
+                        end
+                    else
+                        if slotHave ~= nil and slotHave < need then
+                            buyShort = true
+                        end
+                    end
+                end
+            end
+        end
+        if growableShort then
+            SetMaterialsShortStatus(row, true, nil)
+            row.craftableShared = false
+            return
+        end
+        if containerShort then
+            row.statusKey = "buy_ingredients"
+            row.statusText = T("watch.note.buy_flasks")
+            row.statusLines = nil
+            row.craftableShared = false
+            return
+        end
+        if buyShort then
+            row.statusKey = "buy_ingredients"
+            row.statusText = T("plan.status.buy_ingredients")
+            row.statusLines = nil
+            row.craftableShared = false
+            return
+        end
+        if anyGrowable then
+            SetMaterialsShortStatus(row, true, nil)
+        else
+            row.statusKey = "buy_ingredients"
+            row.statusText = T("plan.status.buy_ingredients")
+            row.statusLines = nil
+        end
+        row.craftableShared = false
+    end
+
+    if deficit <= 0 then
+        if SeedBufferShort(recipe, potionKey, row) then
+            -- Always re-apply so need_seeds <-> upgrading_seed text stays live.
+            ApplySeedBufferStatus(row)
+        elseif key ~= "potion_stocked" then
+            ApplyStockedStatus(row)
+        end
+        return
+    end
+
+    local covered = target > 0 and (have + (tonumber(craftable) or 0)) >= target
+    if covered then
+        if SeedBufferShort(recipe, potionKey, row) then
+            ApplySeedBufferStatus(row)
+        elseif key == "buy_ingredients" and row.craftableShared == true then
+            -- Shared buy-only paint; PolishSharedContest refreshes flasks vs Ready.
+            return
+        else
+            ApplyReadyStatus(row)
+            ApplyNeedApothecaryStatus(row)
+            ApplyNeedSkillStatus(row)
+        end
+        return
+    end
+
+    if key == "ready_to_craft" or key == "ready_to_craft_shared"
+        or key == "potion_stocked" or key == "buy_ingredients"
+        or key == "restocking"
+        or key == "enable_autogrow"
+        or key == "need_skill"
+        or key == "need_apothecary"
+    then
+        -- Uncovered target: never Ready (partial craftable waits for AutoGrow / buy).
+        -- Seed buffer only gates Ready/stocked - buy shortages keep Buy flasks/seeds.
+        if SeedBufferShort(recipe, potionKey, row)
+            and (key == "ready_to_craft" or key == "ready_to_craft_shared" or key == "potion_stocked")
+        then
+            ApplySeedBufferStatus(row)
+        else
+            DemoteToMaterialsShort()
+        end
+        return
+    end
+    -- Seed buffer / climb cleared (or AutoGrow off so SeedBufferShort is false):
+    -- leave need_seeds / upgrading_seed via materials / Ready / Buy paths.
+    if (key == "need_seeds" or key == "upgrading_seed") and not SeedBufferShort(recipe, potionKey, row) then
+        DemoteToMaterialsShort()
+        return
+    end
+    -- Buffer still short: always re-apply so need_seeds <-> upgrading_seed stays live.
+    if (key == "need_seeds" or key == "upgrading_seed") and SeedBufferShort(recipe, potionKey, row) then
+        ApplySeedBufferStatus(row)
+        return
+    end
+    -- Restocking + buffer short: only flip to Seed buffer when grow path exists
+    -- (not when tip is Buy seeds / Buy flasks).
+    if key == "restocking" and SeedBufferShort(recipe, potionKey, row) then
+        local tips = row.statusTipSlots
+        local hardBuy = false
+        if type(tips) == "table" then
+            for i = 1, #tips do
+                local e = tips[i]
+                if type(e) == "table" and (tonumber(e.deficit) or 0) > 0 then
+                    if e.kind == "buy"
+                        or (e.kind == "plant" and e.buySeedOrMat == true and e.needsRefine ~= true)
+                    then
+                        hardBuy = true
+                        break
+                    end
+                end
+            end
+        end
+        if not hardBuy then
+            ApplySeedBufferStatus(row)
+        end
+    end
+end
+
+----------------------------------------------------------------
+-- Seed-buffer tip (PeekCachedIntents only - never CollectIntents)
+----------------------------------------------------------------
+
+local function BuildSeedBufferTipData(opts)
+    opts = type(opts) == "table" and opts or {}
+    local previous = type(opts.previous) == "table" and opts.previous or nil
+    local Watch = StockPiler4.Watch
+    local buffer = Watch and Watch.GetSeedBufferMin and Watch.GetSeedBufferMin() or 5
+    local enabled = Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true
+    local rows = {}
+    local RS = RecipeSpec()
+    local lines = {}
+    if RS and RS.CollectAutoGrowSeedLines then
+        lines = RS.CollectAutoGrowSeedLines() or {}
+    elseif Planner.CollectAutoGrowSeedLines then
+        lines = Planner.CollectAutoGrowSeedLines() or {}
+    end
+    local byKey = {}
+    for i = 1, #lines do
+        local line = lines[i]
+        local spec = line and line.spec
+        if type(spec) == "table" then
+            local seedUid = tonumber(line.seedUid) or 0
+            local specKey = tostring(line.specKey or SpecKey(spec) or seedUid or i)
+            if byKey[specKey] == nil then
+                local live, ground, planned, credit = 0, 0, 0, 0
+                local Refine = StockPiler4.Refine
+                if Refine and Refine.GetSeedBudgetForSpec then
+                    local budget = Refine.GetSeedBudgetForSpec(spec, seedUid)
+                    live = tonumber(budget and budget.live) or 0
+                    ground = tonumber(budget and budget.ground) or 0
+                    planned = tonumber(budget and budget.outstanding) or 0
+                    credit = tonumber(budget and budget.credit) or (live + ground + planned)
+                else
+                    local Inv = StockPiler4.Inventory
+                    if seedUid > 0 and Inv and Inv.CountByUid then
+                        live = tonumber(Inv.CountByUid(seedUid)) or 0
+                        credit = live
+                    end
+                end
+                local rec = {
+                    key = specKey,
+                    spec = spec,
+                    seedUid = seedUid,
+                    live = live,
+                    ground = ground,
+                    planned = planned,
+                    total = credit,
+                    shortBy = math.max(0, (tonumber(buffer) or 0) - credit),
+                }
+                byKey[specKey] = rec
+                rows[#rows + 1] = rec
+            end
+        end
+    end
+    local intents = nil
+    local Refine = StockPiler4.Refine
+    local Grow = StockPiler4.Grow
+    if Refine and Refine.PeekCachedIntents then
+        intents = Refine.PeekCachedIntents()
+    elseif Grow and Grow.PeekCachedIntents then
+        intents = Grow.PeekCachedIntents()
+    end
+    if type(intents) ~= "table" then
+        if previous ~= nil and type(previous.intents) == "table" then
+            return {
+                buffer = tonumber(buffer) or 5,
+                enabled = enabled,
+                watched = rows,
+                intents = previous.intents,
+            }
+        end
+        intents = {}
+    end
+    return {
+        buffer = tonumber(buffer) or 5,
+        enabled = enabled,
+        watched = rows,
+        intents = intents,
+    }
+end
+
+----------------------------------------------------------------
+-- Watch targets + rows
+----------------------------------------------------------------
+
+local function BuildWatchedTargets(ctx)
+    local targets = {}
+    local RS = RecipeSpec()
+    local watches = type(ctx) == "table" and ctx.watches or {}
+    if type(watches) ~= "table" then
+        return targets
+    end
+    for watchKey, watch in pairs(watches) do
+        if type(watch) == "table" and watch.enabled == true then
+            local resolved = ResolveWatchPotion(watchKey)
+            local potion = resolved and resolved.potion
+            local outputUid = 0
+            local name = towstring(tostring(watchKey))
+            local iconNum = 0
+            local recipeSpecKey = resolved and resolved.recipeSpecKey
+            if type(potion) == "table" then
+                outputUid = tonumber(resolved and resolved.outputUid) or tonumber(potion.outputUid) or 0
+                name = potion.name or name
+                iconNum = tonumber(potion.iconNum) or 0
+            else
+                -- Always parse uid from key so missing ResolveWatchPotion cannot drop watches.
+                local uidMatch = string.match(tostring(watchKey), "^uid:(%d+)")
+                outputUid = tonumber(uidMatch) or 0
+                local rkMatch = string.match(tostring(watchKey), "|rk:(.+)$")
+                if type(rkMatch) == "string" and rkMatch ~= "" then
+                    recipeSpecKey = recipeSpecKey or rkMatch
+                end
+            end
+            if type(potion) == "table" or outputUid > 0 then
+                local have = PotionHave(resolved, potion, outputUid)
+                local min = tonumber(watch.targetStock) or 0
+                targets[#targets + 1] = {
+                    id = watchKey,
+                    potionKey = watchKey,
+                    potionBaseKey = (resolved and resolved.potionKey) or ("uid:" .. tostring(outputUid)),
+                    recipeSpecKey = recipeSpecKey,
+                    entry = potion,
+                    uniqueID = outputUid,
+                    name = name,
+                    iconNum = iconNum,
+                    have = have,
+                    min = min,
+                    deficit = math.max(0, min - have),
+                    autoGrow = watch.autoGrow == true,
+                    priorityTier = (StockPiler4.Watch and StockPiler4.Watch.GetPriorityTier
+                        and StockPiler4.Watch.GetPriorityTier(watchKey))
+                        or tonumber(watch.priorityTier) or 1,
+                }
+            end
+        end
+    end
+    table.sort(targets, function(a, b)
+        local ta = tonumber(a.priorityTier) or 1
+        local tb = tonumber(b.priorityTier) or 1
+        if ta ~= tb then
+            return ta < tb
+        end
+        local na, nb = ToNarrow(a.name), ToNarrow(b.name)
+        if na ~= nb then
+            return na < nb
+        end
+        return tostring(a.potionKey) < tostring(b.potionKey)
+    end)
+    return targets
+end
+
+local function StampRowCraftMatIndex(row)
+    if type(row) ~= "table" then
+        return
+    end
+    local uids = {}
+    local keys = {}
+    local outUid = tonumber(row.uniqueID) or 0
+    if outUid > 0 then
+        uids[outUid] = true
+    end
+    local recipe = row.recipe or row.specRecipe
+    if type(recipe) == "table" then
+        local slots = recipe.slots or {}
+        local MS = MaterialSpec()
+        for i = 1, #slots do
+            local spec = ResolveSlotSpec(slots[i])
+            if type(spec) == "table" then
+                local bound = SpecBoundUid(spec)
+                if bound <= 0 then
+                    bound = tonumber(spec.uid) or tonumber(spec.uniqueID) or 0
+                end
+                if bound > 0 then
+                    uids[bound] = true
+                end
+                local sk = SpecKey(spec)
+                if type(sk) == "string" and sk ~= "" then
+                    keys[sk] = true
+                end
+                if MS and MS.ProductKey then
+                    local pk = MS.ProductKey(spec)
+                    if type(pk) == "string" and pk ~= "" then
+                        keys[pk] = true
+                    end
+                end
+            end
+        end
+    end
+    row._craftMatUids = uids
+    row._craftMatKeys = keys
+end
+
+--- Resolve last net uid delta into touch sets. unresolved=true -> full craftable recount.
+local function BuildDeltaTouchSets(delta)
+    local uids = {}
+    local keys = {}
+    local unresolved = false
+    if type(delta) ~= "table" then
+        return uids, keys, true
+    end
+    local Inv = StockPiler4.Inventory
+    local MS = MaterialSpec()
+    local any = false
+    for uid, _ in pairs(delta) do
+        uid = tonumber(uid) or 0
+        if uid > 0 then
+            any = true
+            uids[uid] = true
+            local sample = Inv and Inv.GetSample and Inv.GetSample(uid)
+            if type(sample) ~= "table" then
+                unresolved = true
+            else
+                local matched = false
+                if MS and MS.FromItemDataCached then
+                    local itemSpec = MS.FromItemDataCached(sample)
+                    if type(itemSpec) == "table" then
+                        local sk = SpecKey(itemSpec)
+                        if type(sk) == "string" and sk ~= "" then
+                            keys[sk] = true
+                            matched = true
+                        end
+                        if MS.ProductKey then
+                            local pk = MS.ProductKey(itemSpec)
+                            if type(pk) == "string" and pk ~= "" then
+                                keys[pk] = true
+                                matched = true
+                            end
+                        end
+                    end
+                elseif MS and MS.ProductKey then
+                    local pk = MS.ProductKey(sample)
+                    if type(pk) == "string" and pk ~= "" then
+                        keys[pk] = true
+                        matched = true
+                    end
+                end
+                if not matched then
+                    unresolved = true
+                end
+            end
+        end
+    end
+    if not any then
+        return uids, keys, true
+    end
+    return uids, keys, unresolved
+end
+
+local function RowTouchesCraftDelta(row, deltaUids, deltaKeys)
+    if type(row) ~= "table" then
+        return true
+    end
+    if type(row._craftMatUids) ~= "table" or type(row._craftMatKeys) ~= "table" then
+        StampRowCraftMatIndex(row)
+    end
+    if type(deltaUids) == "table" then
+        for uid in pairs(deltaUids) do
+            if row._craftMatUids[uid] == true then
+                return true
+            end
+        end
+    end
+    if type(deltaKeys) == "table" then
+        for k in pairs(deltaKeys) do
+            if row._craftMatKeys[k] == true then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function FillWatchRowCraftable(row, ctx)
+    if type(row) ~= "table" then
+        return
+    end
+    local recipe = row.recipe
+    local craftsPossible = CountCraftsPossibleMemo(recipe)
+    local craftable = math.max(0, math.floor((craftsPossible * RecipeYield(recipe)) + 0.5))
+    row.craftable = craftable
+    row.craftsPossible = craftsPossible
+    row.craftableShared = false
+    row.craftableText = towstring(tostring(craftable))
+    StampCraftableSafety(row)
+    StampBottleGap(row)
+    StampRowCraftMatIndex(row)
+    local snapGen = type(ctx) == "table" and tonumber(ctx.snapGen) or CurrentSnapGen()
+    if snapGen > 0 then
+        row._craftableSnapGen = snapGen
+    end
+end
+
+local function PolishWatchRowsStatus(rows)
+    for i = 1, #rows do
+        local row = rows[i]
+        if type(row) == "table" and row.skillUp ~= true and row.addonOwned ~= true then
+            StampBottleGap(row)
+            local craftable = tonumber(row.craftable) or 0
+            local have = tonumber(row.potionHave) or 0
+            local target = tonumber(row.potionMin) or tonumber(row.target) or 0
+            local covered = target > 0 and (have + craftable) >= target
+            local key = tostring(row.statusKey or "")
+            -- Ready only when bags+craftable cover the target.
+            if craftable > 0 and covered and (key == "buy_ingredients" or key == "restocking") then
+                ApplyReadyStatus(row)
+                key = "ready_to_craft"
+            end
+            -- Uncovered Ready (partial craftable / race) -> Enable AutoGrow / Restocking / Buy.
+            if (not covered or craftable <= 0)
+                and (key == "ready_to_craft" or key == "ready_to_craft_shared")
+            then
+                SetMaterialsShortStatus(row, CanAutoGrowSkill(), nil)
+                key = tostring(row.statusKey or "")
+            end
+            -- Stale Enable AutoGrow / Restocking after toggles change (cheap rebuild / live rows).
+            if key == "enable_autogrow" or key == "restocking" then
+                if covered then
+                    if (tonumber(row.potionDeficit) or 0) <= 0 then
+                        if SeedBufferShort(row.recipe, row.potionKey or row.potionRecipeKey or row.id, row) then
+                            ApplySeedBufferStatus(row)
+                        else
+                            ApplyStockedStatus(row)
+                        end
+                    elseif craftable > 0 then
+                        ApplyReadyStatus(row)
+                    else
+                        SetMaterialsShortStatus(row, CanAutoGrowSkill(), nil)
+                    end
+                else
+                    SetMaterialsShortStatus(row, CanAutoGrowSkill(), nil)
+                end
+                key = tostring(row.statusKey or "")
+            end
+            -- AutoGrow-off must not stay Ready when Cultivation is trained
+            -- (manual brew still uses the Craftable/Load chip). Apo-only keeps Ready.
+            if CanAutoGrowSkill()
+                and (key == "ready_to_craft" or key == "ready_to_craft_shared")
+            then
+                local pk = tostring(row.potionKey or row.potionRecipeKey or row.id or "")
+                if not WatchWantsAutoGrow(pk, nil) then
+                    ApplyReadyStatus(row)
+                    key = tostring(row.statusKey or "")
+                end
+            end
+            ApplyNeedApothecaryStatus(row)
+            ApplyNeedSkillStatus(row)
+            ReconcileAutoGrowStatus(row)
+        end
+    end
+    -- Shared contest + Ready<->Shared after promote/demote (plan-row SoT).
+    PolishSharedContest(rows)
+    for i = 1, #rows do
+        StampCraftableSafety(rows[i])
+    end
+    -- Shared seed cushion: any short seed demotes every AutoGrow watch that uses it.
+    PropagateSharedSeedBufferStatus(rows)
+end
+
+local function FillWatchRowTips(row, demand)
+    if type(row) ~= "table" or type(row.recipe) ~= "table" then
+        return
+    end
+    if type(row.statusTipSlots) == "table" and #row.statusTipSlots > 0 then
+        StampRowSeedBufferUids(row)
+        return
+    end
+    local craftsNeeded = tonumber(row.craftsNeeded) or 0
+    local slots = row.recipe.slots or {}
+    local entries = {}
+    for i = 1, #slots do
+        local entry = RecipeSlotPlanEntry(slots[i], slots, craftsNeeded, demand)
+        if entry ~= nil then
+            if type(row.contestedSpecKeys) == "table" then
+                local k = SpecKey(entry.spec)
+                if k ~= nil and row.contestedSpecKeys[k] == true then
+                    entry.note = "(Shared)"
+                end
+            end
+            entries[#entries + 1] = entry
+        end
+    end
+    row.statusTipSlots = entries
+    StampRowSeedBufferUids(row)
+end
+
+local function PlantSeedBufferShort(seedUid, plantUid, spec)
+    local Watch = StockPiler4.Watch
+    if not (Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true) then
+        return false
+    end
+    seedUid = tonumber(seedUid) or 0
+    if seedUid <= 0 then
+        return false
+    end
+    local buffer = Watch.GetSeedBufferMin and tonumber(Watch.GetSeedBufferMin()) or 5
+    local Refine = StockPiler4.Refine
+    if Refine and Refine.GetSeedBudget then
+        local b = Refine.GetSeedBudget(seedUid)
+        if type(b) == "table" then
+            local credit = tonumber(b.credit)
+            if credit == nil then
+                credit = tonumber(b.live) or 0
+            end
+            return credit < buffer
+        end
+    end
+    local Inv = StockPiler4.Inventory
+    local have = Inv and Inv.CountByUid and tonumber(Inv.CountByUid(seedUid)) or 0
+    return have < buffer
+end
+
+local function ApplyPlantWatchStatus(row, potionRows)
+    if type(row) ~= "table" then
+        return
+    end
+    local deficit = tonumber(row.potionDeficit) or 0
+    local Watch = StockPiler4.Watch
+    local armed = Watch and Watch.ShouldAutoGrowPlant
+        and Watch.ShouldAutoGrowPlant(row.plantKey or row.id) == true
+    row.craftableShared = false
+    row.craftable = 0
+    row.craftableText = L""
+    row.hideBrew = true
+    row.hideCraftable = true
+    row.priorityTierText = L"-"
+    row.plantPrioSentinel = true
+    local bufferShort = PlantSeedBufferShort(row.seedUid, row.plantUid, row.spec)
+    if deficit <= 0 then
+        -- Stocked: stock UI only. Seed buffer short -> need_seeds (never climb text;
+        -- ephemeral Upgrade row owns upgrading status).
+        if bufferShort then
+            row.statusKey = "need_seeds"
+            row.statusText = T("plan.status.need_seeds")
+            row.statusLines = {
+                T("tip.watch.seed_buffer"),
+            }
+            row.seedBufferShort = true
+            return
+        end
+        row.statusKey = "plant_stocked"
+        row.statusText = T("plan.status.plant_stocked")
+        row.statusLines = nil
+        row.seedBufferShort = false
+        return
+    end
+    if not armed then
+        row.statusKey = "enable_autogrow"
+        row.statusText = T("plan.status.enable_autogrow")
+        row.statusLines = nil
+        row.seedBufferShort = false
+        return
+    end
+    if bufferShort then
+        -- need_seeds only - ApplySeedBufferStatus must not paint upgrading on plants.
+        row.statusKey = "need_seeds"
+        row.statusText = T("plan.status.need_seeds")
+        row.statusLines = {
+            T("tip.watch.seed_buffer"),
+        }
+        row.seedBufferShort = true
+        return
+    end
+    row.seedBufferShort = false
+    -- plant_stock waits while potions still need Cult grow (buy/brew do not block).
+    if PlantWatchesAwaitPotions(potionRows) then
+        row.statusKey = "waiting_potions"
+        row.statusText = T("plan.status.waiting_potions")
+        row.statusLines = {
+            T("tip.watch.plant_waiting_potions"),
+        }
+        return
+    end
+    row.statusKey = "restocking"
+    row.statusText = T("plan.status.restocking")
+    row.statusLines = nil
+end
+
+local function BuildPlantWatchRows(potionRows)
+    local rows = {}
+    local Watch = StockPiler4.Watch
+    local plantWatches = Watch and Watch.GetPlantWatches and Watch.GetPlantWatches() or {}
+    if type(plantWatches) ~= "table" then
+        return rows
+    end
+    local Catalog = StockPiler4.Catalog
+    local Items = StockPiler4.Items
+    local SM = StockPiler4.SeedMap
+    local MS = MaterialSpec()
+    local list = {}
+    for plantKey, watch in pairs(plantWatches) do
+        if type(watch) == "table" and watch.enabled == true then
+            list[#list + 1] = { plantKey = tostring(plantKey), watch = watch }
+        end
+    end
+    table.sort(list, function(a, b)
+        return tostring(a.plantKey) < tostring(b.plantKey)
+    end)
+    for i = 1, #list do
+        local plantKey = list[i].plantKey
+        local watch = list[i].watch
+        local plantUid = Watch.ParsePlantKey and Watch.ParsePlantKey(plantKey) or 0
+        plantUid = tonumber(plantUid) or 0
+        if plantUid > 0 then
+            local item = Items and Items.GetByUid and Items.GetByUid(plantUid) or nil
+            local itemData = item
+            if type(item) == "table" and type(item.itemData) == "table" then
+                itemData = item.itemData
+            end
+            local spec = Items and Items.ToSpec and Items.ToSpec(plantUid) or nil
+            if type(spec) ~= "table" and MS and MS.FromItemData and type(itemData) == "table" then
+                spec = MS.FromItemData(itemData)
+            end
+            local seedUid = 0
+            if SM and SM.GetSeedUidsForPlant then
+                local seeds = SM.GetSeedUidsForPlant(plantUid)
+                if type(seeds) == "table" and #seeds > 0 then
+                    seedUid = tonumber(seeds[1]) or 0
+                end
+            end
+            if seedUid <= 0 and type(spec) == "table" and SM and SM.ResolveSeedForSpec then
+                local seed = SM.ResolveSeedForSpec(spec)
+                if type(seed) == "table" then
+                    seedUid = tonumber(seed.uniqueID or seed.uid) or 0
+                end
+            end
+            local have = 0
+            if Catalog and Catalog.PlantHave then
+                have = tonumber(Catalog.PlantHave(plantUid)) or 0
+            elseif StockPiler4.Inventory and StockPiler4.Inventory.CountByUid then
+                have = tonumber(StockPiler4.Inventory.CountByUid(plantUid)) or 0
+            end
+            local target = tonumber(watch.targetStock) or 40
+            local deficit = math.max(0, target - have)
+            local name = (item and item.name) or (itemData and itemData.name)
+                or (spec and spec.name) or towstring(tostring(plantUid))
+            local iconNum = tonumber(item and item.iconNum) or tonumber(itemData and itemData.iconNum) or 0
+            if StockPiler4.Inventory and StockPiler4.Inventory.GetSample then
+                local sample = StockPiler4.Inventory.GetSample(plantUid)
+                if type(sample) == "table" then
+                    itemData = sample
+                    iconNum = tonumber(sample.iconNum) or iconNum
+                    if sample.name ~= nil then
+                        name = sample.name
+                    end
+                end
+            end
+            if type(itemData) ~= "table" and Items and Items.AsItemData then
+                itemData = Items.AsItemData(plantUid)
+            end
+            if StockPiler4.Inventory and StockPiler4.Inventory.ResolvePotionItemData then
+                itemData = StockPiler4.Inventory.ResolvePotionItemData(nil, plantUid, itemData) or itemData
+            end
+            if type(itemData) == "table" and (tonumber(itemData.uniqueID) or 0) <= 0 then
+                itemData.uniqueID = plantUid
+            end
+            local nameR, nameG, nameB = 255, 255, 255
+            if type(itemData) == "table" and DataUtils and DataUtils.GetItemRarityColor then
+                local ok, color = pcall(DataUtils.GetItemRarityColor, itemData)
+                if ok and type(color) == "table" then
+                    nameR = tonumber(color.r) or 255
+                    nameG = tonumber(color.g) or 255
+                    nameB = tonumber(color.b) or 255
+                end
+            end
+            iconNum = tonumber(itemData and itemData.iconNum) or iconNum
+            local row = {
+                kind = "plant",
+                isPlantWatch = true,
+                id = plantKey,
+                plantKey = plantKey,
+                potionKey = plantKey,
+                potionRecipeKey = plantKey,
+                plantUid = plantUid,
+                seedUid = seedUid,
+                uniqueID = plantUid,
+                name = name,
+                iconNum = iconNum,
+                itemData = itemData or item,
+                nameR = nameR,
+                nameG = nameG,
+                nameB = nameB,
+                spec = spec,
+                potionHave = have,
+                stockText = towstring(tostring(have)),
+                potionMin = target,
+                target = target,
+                targetText = towstring(tostring(target)),
+                potionDeficit = deficit,
+                craftable = 0,
+                craftableText = L"",
+                craftableShared = false,
+                autoGrow = watch.autoGrow == true,
+                priorityTierText = L"-",
+                plantPrioSentinel = true,
+                hideBrew = true,
+                hideCraftable = true,
+                hasRecipe = false,
+                recipe = nil,
+            }
+            ApplyPlantWatchStatus(row, potionRows)
+            rows[#rows + 1] = row
+        end
+    end
+    table.sort(rows, function(a, b)
+        return string.lower(ToNarrow(a.name)) < string.lower(ToNarrow(b.name))
+    end)
+    return rows
+end
+
+local function BuildWatchRows(ctx)
+    local rows = {}
+    local RS = RecipeSpec()
+    -- Quiet heal: remaps drifted watch keys without bumping gens mid-build.
+    if RS and RS.HealWatchRecipeFingerprints then
+        RS.HealWatchRecipeFingerprints({ bump = false, invalidate = false })
+    end
+    local targets = BuildWatchedTargets(ctx)
+    PerfBegin("Build.Demand")
+    local DP = StockPiler4.DemandPlan
+    local demand = DP and DP.Build and DP.Build() or {}
+    PerfEnd("Build.Demand")
+    PerfBegin("Build.Status")
+    for i = 1, #targets do
+        local target = targets[i]
+        local recipe = RS and RS.RecipeSpecForPotion and RS.RecipeSpecForPotion(target.potionKey) or nil
+        if recipe and RS and RS.HydrateRecipeSlots then
+            RS.HydrateRecipeSlots(recipe)
+        end
+        local row = {
+            id = target.id,
+            potionKey = target.potionKey,
+            potionRecipeKey = target.potionKey,
+            name = target.name,
+            iconNum = target.iconNum,
+            uniqueID = target.uniqueID,
+            potionHave = target.have,
+            stockText = towstring(tostring(target.have)),
+            potionMin = target.min,
+            target = target.min,
+            potionDeficit = target.deficit,
+            recipe = recipe,
+            recipeSpecKey = target.recipeSpecKey,
+            potionBaseKey = target.potionBaseKey,
+            autoGrow = target.autoGrow == true,
+            priorityTier = tonumber(target.priorityTier) or 1,
+            priorityTierText = towstring(tostring(tonumber(target.priorityTier) or 1)),
+            hasRecipe = type(recipe) == "table",
+        }
+        ApplySpecPlanStatus(row, target, recipe, demand)
+        FillWatchRowCraftable(row, ctx)
+        rows[#rows + 1] = row
+    end
+    PolishWatchRowsStatus(rows)
+    local plantRows = BuildPlantWatchRows(rows)
+    for i = 1, #plantRows do
+        rows[#rows + 1] = plantRows[i]
+    end
+    local UpgradeSeed = StockPiler4.UpgradeSeed
+    if UpgradeSeed and UpgradeSeed.BuildWatchStatusRows then
+        local upRows = UpgradeSeed.BuildWatchStatusRows() or {}
+        for i = 1, #upRows do
+            local ur = upRows[i]
+            if type(ur) == "table" then
+                rows[#rows + 1] = ur
+            end
+        end
+    end
+    local SkillUp = StockPiler4.SkillUp
+    if SkillUp and SkillUp.BuildWatchStatusRows then
+        local skillRows = SkillUp.BuildWatchStatusRows() or {}
+        for i = 1, #skillRows do
+            local sr = skillRows[i]
+            if type(sr) == "table" then
+                rows[#rows + 1] = sr
+            end
+        end
+    end
+    PerfEnd("Build.Status")
+    PerfBegin("Build.Tips")
+    for i = 1, #rows do
+        if rows[i].kind ~= "plant" and rows[i].isPlantWatch ~= true
+            and rows[i].skillUp ~= true and rows[i].addonOwned ~= true
+        then
+            FillWatchRowTips(rows[i], demand)
+        end
+    end
+    -- Tips can add seed UIDs; re-propagate so shared shorts demote all sharers.
+    PropagateSharedSeedBufferStatus(rows)
+    PerfEnd("Build.Tips")
+    local prevPlan = StockPiler4.PlanSnapshot and StockPiler4.PlanSnapshot.Get
+        and StockPiler4.PlanSnapshot.Get()
+    local seedBufferTipData = BuildSeedBufferTipData({
+        previous = type(prevPlan) == "table" and prevPlan.seedBufferTipData or nil,
+    })
+    return rows, seedBufferTipData, demand
+end
+
+----------------------------------------------------------------
+-- Live Status overlay
+----------------------------------------------------------------
+
+local function PatchPlanSnapshotLiveStatus(row)
+    local PS = StockPiler4.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    if type(plan) ~= "table" or type(plan.rows) ~= "table" then
+        return
+    end
+    local keyStr = tostring(row.potionRecipeKey or row.id or row.potionKey or "")
+    local uid = tonumber(row.uniqueID) or 0
+    for i = 1, #plan.rows do
+        local snap = plan.rows[i]
+        if type(snap) == "table" then
+            local snapKey = tostring(snap.potionRecipeKey or snap.id or snap.potionKey or "")
+            local snapUid = tonumber(snap.uniqueID) or 0
+            if (keyStr ~= "" and snapKey == keyStr) or (uid > 0 and snapUid == uid) then
+                snap.potionHave = row.potionHave
+                snap.potionDeficit = row.potionDeficit
+                snap.craftable = row.craftable
+                snap.statusKey = row.statusKey
+                snap.statusText = row.statusText
+                snap.statusLines = row.statusLines
+                snap.craftableShared = row.craftableShared
+                snap.seedBufferShort = row.seedBufferShort == true
+                snap.craftableSafe = row.craftableSafe == true
+                return
+            end
+        end
+    end
+end
+
+local function RefreshSkillUpWatchRows(rows, opts)
+    opts = type(opts) == "table" and opts or {}
+    if type(rows) ~= "table" or #rows == 0 then
+        return false
+    end
+    local SkillUp = StockPiler4.SkillUp
+    local UpgradeSeed = StockPiler4.UpgradeSeed
+    local fresh = {}
+    if UpgradeSeed and UpgradeSeed.BuildWatchStatusRows then
+        local up = UpgradeSeed.BuildWatchStatusRows() or {}
+        for i = 1, #up do
+            fresh[#fresh + 1] = up[i]
+        end
+    end
+    if SkillUp and SkillUp.BuildWatchStatusRows then
+        local sk = SkillUp.BuildWatchStatusRows() or {}
+        for i = 1, #sk do
+            fresh[#fresh + 1] = sk[i]
+        end
+    end
+    if #fresh < 1 and not (SkillUp and SkillUp.BuildWatchStatusRows)
+        and not (UpgradeSeed and UpgradeSeed.BuildWatchStatusRows)
+    then
+        return false
+    end
+    local byKey = {}
+    for i = 1, #fresh do
+        local sr = fresh[i]
+        if type(sr) == "table" then
+            local k = tostring(sr.potionKey or sr.id or "")
+            if k ~= "" then
+                byKey[k] = sr
+            end
+        end
+    end
+    local dirty = false
+    for i = 1, #rows do
+        local row = rows[i]
+        if type(row) == "table" and (row.skillUp == true or row.addonOwned == true
+            or row.upgradeWatch == true)
+        then
+            local k = tostring(row.potionKey or row.id or "")
+            local sr = byKey[k]
+            if type(sr) == "table" then
+                local prevKey = tostring(row.statusKey or "")
+                local prevText = row.statusText
+                local prevLines = row.statusLines
+                row.statusKey = sr.statusKey
+                row.statusText = sr.statusText
+                row.statusLines = sr.statusLines
+                row.seedUid = sr.seedUid
+                row.plantUid = sr.plantUid
+                row.mainUid = sr.mainUid
+                row.autoGrow = sr.autoGrow
+                row.hideBrew = sr.hideBrew
+                row.hideAutoGrow = sr.hideAutoGrow
+                row.craftable = sr.craftable
+                row.craftableSafe = sr.craftableSafe
+                row.craftableText = sr.craftableText
+                row.potionHave = sr.potionHave
+                row.potionMin = sr.potionMin
+                row.potionDeficit = sr.potionDeficit
+                row.target = sr.target
+                row.skillReq = sr.skillReq
+                row.iconNum = sr.iconNum
+                -- Recipe must travel with ready_to_craft or Brew load skips no-recipe
+                -- while the footer stays lit (craftable>0 without slots).
+                row.recipe = sr.recipe
+                row.recipeYield = sr.recipeYield
+                local newKey = tostring(row.statusKey or "")
+                if newKey ~= prevKey or row.statusText ~= prevText
+                    or row.statusLines ~= prevLines
+                then
+                    dirty = true
+                    if opts.syncSnapshot ~= false then
+                        PatchPlanSnapshotLiveStatus(row)
+                    end
+                end
+            elseif row.skillUp == true then
+                -- Apo/Cult SkillUp no longer emitted (e.g. skill hit 200): disarm Ready
+                -- so bag flush cannot re-load a stale board.
+                if (tonumber(row.craftable) or 0) > 0
+                    or type(row.recipe) == "table"
+                    or tostring(row.statusKey or "") == "ready_to_craft"
+                then
+                    row.craftable = 0
+                    row.craftableSafe = false
+                    row.craftableText = L""
+                    row.recipe = nil
+                    row.potionDeficit = 0
+                    row.hideBrew = true
+                    row.statusKey = "skill_done"
+                    row.statusText = T("skillup.watch.done")
+                    dirty = true
+                    if opts.syncSnapshot ~= false then
+                        PatchPlanSnapshotLiveStatus(row)
+                    end
+                end
+            end
+        end
+    end
+    return dirty
+end
+
+local function PatchWatchRowsLiveCounts(rows, opts)
+    opts = type(opts) == "table" and opts or {}
+    local syncSnapshot = opts.syncSnapshot ~= false
+    local allowWarmHave = opts.allowWarmHave ~= false
+    if type(rows) ~= "table" or #rows == 0 then
+        return
+    end
+    local Inv = StockPiler4.Inventory
+    if not Inv or not Inv.CountByUid then
+        return
+    end
+    -- Skip WarmHave while refine outstanding / brew session / closed-window.
+    local RP = StockPiler4.RefinePipeline
+    if RP and RP.HasOutstanding and RP.HasOutstanding() == true then
+        allowWarmHave = false
+    end
+    local Brew = StockPiler4.Brew
+    if Brew and Brew.GetSession then
+        local session = Brew.GetSession()
+        if type(session) == "table"
+            and (session.phase == "loading" or session.phase == "loaded")
+        then
+            allowWarmHave = false
+        end
+    end
+    local snapGen = CurrentSnapGen()
+    local needCraftable = false
+    for i = 1, #rows do
+        local row = rows[i]
+        if type(row) == "table" and type(row.recipe or row.specRecipe) == "table"
+            and (tonumber(row._craftableSnapGen) or -1) ~= snapGen
+        then
+            needCraftable = true
+            break
+        end
+    end
+    local haveWarm = IsHaveCacheWarmForSnap()
+    if needCraftable then
+        BeginPlanCraftsMemo()
+        if not haveWarm and allowWarmHave then
+            WarmSpecHaveCacheForWatches()
+            haveWarm = IsHaveCacheWarmForSnap()
+        end
+    end
+    local recountCraftable = needCraftable and (haveWarm or allowWarmHave)
+    -- Mid-brew Watch catch-up: Stock/Status only (no craftable recount).
+    if opts.recountCraftable == false then
+        recountCraftable = false
+    end
+    local selectiveCraftable = false
+    local deltaUids, deltaKeys
+    if recountCraftable and Inv.GetLastNetUidDelta then
+        local delta = Inv.GetLastNetUidDelta()
+        if type(delta) == "table" then
+            local unresolved
+            deltaUids, deltaKeys, unresolved = BuildDeltaTouchSets(delta)
+            if unresolved ~= true then
+                selectiveCraftable = true
+            end
+        end
+    end
+    local contestDirty = false
+    for i = 1, #rows do
+        local row = rows[i]
+        if type(row) == "table" and (row.skillUp == true or row.addonOwned == true) then
+            -- Refreshed after the plant/potion loop (see RefreshSkillUpWatchRows).
+        elseif type(row) == "table" and (row.kind == "plant" or row.isPlantWatch == true) then
+            local uid = tonumber(row.uniqueID) or tonumber(row.plantUid) or 0
+            if uid > 0 then
+                local have = tonumber(Inv.CountByUid(uid)) or 0
+                local prevKey = tostring(row.statusKey or "")
+                local prevText = row.statusText
+                row.potionHave = have
+                row.stockText = towstring(tostring(have))
+                local min = tonumber(row.potionMin) or tonumber(row.target) or 0
+                local deficit = math.max(0, min - have)
+                row.potionDeficit = deficit
+                row.targetText = towstring(tostring(min))
+                ApplyPlantWatchStatus(row, rows)
+                local newKey = tostring(row.statusKey or "")
+                if syncSnapshot and (newKey ~= prevKey or row.statusText ~= prevText) then
+                    PatchPlanSnapshotLiveStatus(row)
+                end
+                if newKey ~= prevKey then
+                    local Grow = StockPiler4.Grow
+                    if Grow and Grow.MarkPlantJobDirty then
+                        Grow.MarkPlantJobDirty()
+                    end
+                end
+            end
+        elseif type(row) == "table" then
+            local uid = tonumber(row.uniqueID) or 0
+            if uid > 0 then
+                local have = tonumber(Inv.CountByUid(uid)) or 0
+                local prevDeficit = tonumber(row.potionDeficit) or 0
+                local prevCraftable = tonumber(row.craftable) or 0
+                local prevKey = tostring(row.statusKey or "")
+                local prevText = row.statusText
+                row.potionHave = have
+                row.stockText = towstring(tostring(have))
+                local min = tonumber(row.potionMin) or tonumber(row.target) or 0
+                local deficit = math.max(0, min - have)
+                row.potionDeficit = deficit
+                local recipe = row.recipe or row.specRecipe
+                local craftable = tonumber(row.craftable) or 0
+                if type(recipe) == "table" then
+                    row.craftsNeeded = CraftsNeededForDeficit(deficit, recipe)
+                    if recountCraftable and (tonumber(row._craftableSnapGen) or -1) ~= snapGen then
+                        local doRecount = not selectiveCraftable
+                            or RowTouchesCraftDelta(row, deltaUids, deltaKeys)
+                        if doRecount then
+                            craftable = CountPotionsCraftable(recipe)
+                            row.craftable = craftable
+                            row.craftsPossible = CountCraftsPossibleMemo(recipe)
+                            row.craftableText = towstring(tostring(craftable))
+                            StampRowCraftMatIndex(row)
+                            -- Only stamp when recounted. Stamping on a selective miss
+                            -- locked Restocking until /sp4 dumpall force-built.
+                            row._craftableSnapGen = snapGen
+                        end
+                    end
+                end
+                StampBottleGap(row)
+                if deficit ~= prevDeficit or craftable ~= prevCraftable then
+                    contestDirty = true
+                end
+                ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, min)
+                ReconcileAutoGrowStatus(row)
+                StampCraftableSafety(row)
+                local newKey = tostring(row.statusKey or "")
+                -- ApplyReadyStatus clears craftableShared; re-contest on Ready/Shared transitions.
+                if newKey ~= prevKey
+                    and (newKey == "ready_to_craft" or newKey == "ready_to_craft_shared"
+                        or newKey == "buy_ingredients"
+                        or prevKey == "ready_to_craft" or prevKey == "ready_to_craft_shared"
+                        or prevKey == "buy_ingredients")
+                then
+                    contestDirty = true
+                end
+                if syncSnapshot and (newKey ~= prevKey or row.statusText ~= prevText) then
+                    PatchPlanSnapshotLiveStatus(row)
+                end
+                if (prevKey == "need_seeds" or prevKey == "upgrading_seed"
+                        or prevKey == "ready_to_craft"
+                        or prevKey == "ready_to_craft_shared"
+                        or prevKey == "potion_stocked")
+                    and newKey ~= prevKey
+                    and (newKey == "restocking" or newKey == "need_seeds"
+                        or newKey == "upgrading_seed"
+                        or newKey == "buy_ingredients" or newKey == "enable_autogrow")
+                then
+                    local Grow = StockPiler4.Grow
+                    if Grow and Grow.MarkPlantJobDirty then
+                        Grow.MarkPlantJobDirty()
+                    end
+                end
+                if newKey ~= prevKey
+                    and (newKey == "restocking" or newKey == "need_seeds"
+                        or newKey == "upgrading_seed"
+                        or newKey == "ready_to_craft_shared"
+                        or newKey == "buy_ingredients"
+                        or prevKey == "ready_to_craft_shared"
+                        or prevKey == "buy_ingredients"
+                        or prevKey == "restocking" or prevKey == "need_seeds"
+                        or prevKey == "upgrading_seed")
+                then
+                    InvalidateFocusCaches()
+                end
+            end
+        end
+    end
+    -- Plants were painted before potions in the loop; re-apply soft gate after potion statuses.
+    for i = 1, #rows do
+        local row = rows[i]
+        if type(row) == "table" and (row.kind == "plant" or row.isPlantWatch == true) then
+            local key = tostring(row.statusKey or "")
+            if key == "waiting_potions" or key == "restocking" then
+                local prevKey = key
+                local prevText = row.statusText
+                ApplyPlantWatchStatus(row, rows)
+                local newKey = tostring(row.statusKey or "")
+                if syncSnapshot and (newKey ~= prevKey or row.statusText ~= prevText) then
+                    PatchPlanSnapshotLiveStatus(row)
+                end
+                if newKey ~= prevKey then
+                    local Grow = StockPiler4.Grow
+                    if Grow and Grow.MarkPlantJobDirty then
+                        Grow.MarkPlantJobDirty()
+                    end
+                end
+            end
+        end
+    end
+    -- SkillUp rows are not count-patched above; rebuild status so waiting → planting
+    -- flips when watches stock without a full plan rebuild.
+    RefreshSkillUpWatchRows(rows, { syncSnapshot = syncSnapshot })
+    -- Shared contest: mat buys (flasks) often leave potion deficit/craftable unchanged,
+    -- so contestDirty alone misses clearing craftableShared / Buy-flasks paint.
+    local needSharedPolish = contestDirty
+    if not needSharedPolish then
+        for i = 1, #rows do
+            local row = rows[i]
+            if type(row) == "table"
+                and (row.craftableShared == true
+                    or tostring(row.statusKey or "") == "ready_to_craft_shared"
+                    or tostring(row.statusKey or "") == "buy_ingredients")
+            then
+                needSharedPolish = true
+                break
+            end
+        end
+    end
+    if needSharedPolish then
+        local Brew = StockPiler4.Brew
+        local beforeReady = Brew and Brew.HasReadyToCraft and Brew.HasReadyToCraft() == true
+        if PolishSharedContest(rows) then
+            InvalidateFocusCaches()
+        end
+        if Brew and Brew.InvalidateCanBrewCache then
+            Brew.InvalidateCanBrewCache()
+        end
+        local afterReady = Brew and Brew.HasReadyToCraft and Brew.HasReadyToCraft() == true
+        if syncSnapshot then
+            for i = 1, #rows do
+                local row = rows[i]
+                if type(row) == "table" then
+                    PatchPlanSnapshotLiveStatus(row)
+                end
+            end
+        end
+        if beforeReady ~= afterReady then
+            local Sch = StockPiler4.Scheduler
+            if Sch and Sch.RequestFooterRefresh then
+                Sch.RequestFooterRefresh()
+            end
+            local B = StockPiler4.EventBus
+            local E = StockPiler4.Events
+            if B and B.Fire and E and E.CRAFT_READY_CHANGED then
+                B.Fire(E.CRAFT_READY_CHANGED, { ready = afterReady == true })
+            end
+        end
+        if Brew and Brew.MaybeNotifyBrewReady then
+            Brew.MaybeNotifyBrewReady()
+        end
+    end
+    for i = 1, #rows do
+        StampCraftableSafety(rows[i])
+    end
+    if PropagateSharedSeedBufferStatus(rows) then
+        if syncSnapshot then
+            for i = 1, #rows do
+                local row = rows[i]
+                if type(row) == "table" then
+                    PatchPlanSnapshotLiveStatus(row)
+                end
+            end
+        end
+        local BrewLive = StockPiler4.Brew
+        if BrewLive and BrewLive.InvalidateCanBrewCache then
+            BrewLive.InvalidateCanBrewCache()
+        end
+        local SchProp = StockPiler4.Scheduler
+        if SchProp and SchProp.RequestFooterRefresh then
+            SchProp.RequestFooterRefresh()
+        end
+    end
+    if StockPiler4.Grow and StockPiler4.Grow.MaybeNotifyAutoGrowStall then
+        StockPiler4.Grow.MaybeNotifyAutoGrowStall()
+    end
+end
+
+----------------------------------------------------------------
+-- HasReadyToCraft / closed-window sync
+----------------------------------------------------------------
+
+local function RowIsReadyToCraft(row)
+    if type(row) ~= "table" then
+        return false
+    end
+    if row.kind == "plant" or row.isPlantWatch == true then
+        return false
+    end
+    if tostring(row.statusKey or "") ~= "ready_to_craft" then
+        return false
+    end
+    local pk = row.potionKey or row.potionRecipeKey or row.id
+    if not WatchWantsAutoGrow(pk, nil) then
+        return false
+    end
+    if row.craftableShared == true then
+        return false
+    end
+    local craftable = tonumber(row.craftable) or 0
+    if craftable <= 0 or (tonumber(row.potionDeficit) or 0) <= 0 then
+        return false
+    end
+    local have = tonumber(row.potionHave) or 0
+    local target = tonumber(row.potionMin) or tonumber(row.target) or 0
+    if target > 0 and (have + craftable) < target then
+        return false
+    end
+    return true
+end
+
+local function HasReadyToCraftFromPlan()
+    local PS = StockPiler4.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    if type(plan) ~= "table" or type(plan.rows) ~= "table" then
+        return false
+    end
+    for i = 1, #plan.rows do
+        if RowIsReadyToCraft(plan.rows[i]) then
+            return true
+        end
+    end
+    return false
+end
+
+----------------------------------------------------------------
+-- Publish / cheap / garden / full build
+----------------------------------------------------------------
+
+local function PublishPlan(plan, key, meta)
+    InvalidateFocusCaches()
+    local PS = StockPiler4.PlanSnapshot
+    if PS and PS.Set then
+        PS.Set(plan, key)
+    end
+    local B = StockPiler4.EventBus
+    local E = StockPiler4.Events
+    if B and E and E.PLAN_UPDATED then
+        local payload = { planGen = plan.planGen, cacheKey = key }
+        if type(meta) == "table" then
+            for k, v in pairs(meta) do
+                payload[k] = v
+            end
+        end
+        B.Fire(E.PLAN_UPDATED, payload)
+    end
+    if StockPiler4.Brew and StockPiler4.Brew.MaybeNotifyBrewReady then
+        StockPiler4.Brew.MaybeNotifyBrewReady()
+    end
+    if StockPiler4.Grow and StockPiler4.Grow.MaybeNotifyAutoGrowStall then
+        StockPiler4.Grow.MaybeNotifyAutoGrowStall()
+    end
+end
+
+local function RefreshStaleCtx(stale)
+    local g = ReadGens()
+    stale.ctx = stale.ctx or {}
+    stale.ctx.snapGen = g.snapGen
+    stale.ctx.gardenGen = g.gardenGen
+    stale.ctx.refineGen = g.refineGen
+    stale.ctx.watchGen = g.watchGen
+    stale.ctx.knowledgeGen = g.knowledgeGen
+    stale.ctx.settingsHash = g.settingsHash
+    return FormatCacheKey(stale.ctx)
+end
+
+local function TryCheapRebuild()
+    local PS = StockPiler4.PlanSnapshot
+    local stale = PS and PS.Get and PS.Get()
+    if type(stale) ~= "table" or type(stale.rows) ~= "table" or #stale.rows == 0 then
+        return nil
+    end
+    if type(stale.ctx) ~= "table" then
+        return nil
+    end
+    local cur = ReadGens()
+    if StructuralNonRefineKey(stale.ctx) ~= StructuralNonRefineKey(cur) then
+        return nil
+    end
+    PerfBegin("Planner.CheapRebuild")
+    PatchWatchRowsLiveCounts(stale.rows, { syncSnapshot = false })
+    stale.seedBufferTipData = BuildSeedBufferTipData({
+        previous = stale.seedBufferTipData,
+    })
+    local key = RefreshStaleCtx(stale)
+    local planGen = (tonumber(Planner._planGen) or 0) + 1
+    Planner._planGen = planGen
+    stale.planGen = planGen
+    stale.cacheKey = key
+    stale.builtAt = (type(GetGameTime) == "function" and GetGameTime()) or 0
+    PublishPlan(stale, key, { cheap = true })
+    PerfEnd("Planner.CheapRebuild")
+    return stale
+end
+
+local function TryGardenPatch()
+    local PS = StockPiler4.PlanSnapshot
+    local stale = PS and PS.Get and PS.Get()
+    if type(stale) ~= "table" or type(stale.rows) ~= "table" or #stale.rows == 0 then
+        return nil
+    end
+    if type(stale.ctx) ~= "table" then
+        return nil
+    end
+    local cur = ReadGens()
+    if RecipeStructuralKey(stale.ctx) ~= RecipeStructuralKey(cur) then
+        return nil
+    end
+    PerfBegin("Planner.GardenPatch")
+    -- Reuse tips; flip restocking via live overlay; live potion counts; no Tips/Demand.
+    PatchWatchRowsLiveCounts(stale.rows, {
+        syncSnapshot = false,
+        allowWarmHave = false,
+    })
+    -- cacheOnly growing notes when Grow provides them
+    local Grow = StockPiler4.Grow
+    if Grow and Grow.GrowingNotesForSpec then
+        for i = 1, #stale.rows do
+            local row = stale.rows[i]
+            local tips = row and row.statusTipSlots
+            if type(tips) == "table" then
+                for t = 1, #tips do
+                    local entry = tips[t]
+                    if type(entry) == "table" and type(entry.spec) == "table" then
+                        local notes = Grow.GrowingNotesForSpec(entry.spec, { cacheOnly = true })
+                        if notes ~= nil then
+                            entry.growingNotes = notes
+                        end
+                    end
+                end
+            end
+        end
+    end
+    local key = RefreshStaleCtx(stale)
+    local planGen = (tonumber(Planner._planGen) or 0) + 1
+    Planner._planGen = planGen
+    stale.planGen = planGen
+    stale.cacheKey = key
+    stale.builtAt = (type(GetGameTime) == "function" and GetGameTime()) or 0
+    PublishPlan(stale, key, { gardenPatch = true })
+    PerfEnd("Planner.GardenPatch")
+    return stale
+end
+
+local function BuildFull(opts)
+    opts = type(opts) == "table" and opts or {}
+    PerfBegin("Planner.Build")
+    BeginPlanCraftsMemo()
+    PerfBegin("Build.WarmHave")
+    if IsHaveCacheWarmForSnap() then
+        -- prewarm hit
+    else
+        WarmSpecHaveCacheForWatches()
+    end
+    PerfEnd("Build.WarmHave")
+    local ctx = ReadGens()
+    ctx.watches = StockPiler4.Watch and StockPiler4.Watch.GetWatches and StockPiler4.Watch.GetWatches() or {}
+    local key = FormatCacheKey(ctx)
+    local planGen = (tonumber(Planner._planGen) or 0) + 1
+    Planner._planGen = planGen
+    local rows, seedBufferTipData = BuildWatchRows(ctx)
+    -- Demand once, then plant/refine intents reuse it (avoids WarmHave.miss xN per Build).
+    local DemandPlan = StockPiler4.DemandPlan
+    local demand = DemandPlan and DemandPlan.Build and DemandPlan.Build() or nil
+    local PlantPlan = StockPiler4.PlantPlan
+    local Grow = StockPiler4.Grow
+    local plantJob = nil
+    if PlantPlan and PlantPlan.PickPlantJob then
+        plantJob = PlantPlan.PickPlantJob({ demand = demand })
+        if Grow and Grow.MarkPlantJobProbed then
+            Grow.MarkPlantJobProbed(plantJob)
+        end
+    elseif Grow and Grow.GetPlantJob then
+        plantJob = Grow.GetPlantJob()
+    end
+    local plantIntent = PlantPlan and PlantPlan.BuildPlantIntent and PlantPlan.BuildPlantIntent(plantJob) or nil
+    local BuyPlan = StockPiler4.BuyPlan
+    local buyIntent = BuyPlan and BuyPlan.BuildIntent and BuyPlan.BuildIntent() or nil
+    local BrewPlan = StockPiler4.BrewPlan
+    local brewIntent = BrewPlan and BrewPlan.BuildIntent and BrewPlan.BuildIntent({ rows = rows }) or nil
+    local refineIntent = nil
+    local Refine = StockPiler4.Refine
+    if Refine and Refine.CollectIntents then
+        local intents = Refine.CollectIntents({ demand = demand })
+        if type(intents) == "table" and #intents > 0 and type(intents[1]) == "table" then
+            refineIntent = intents[1]
+        end
+    end
+    local plan = {
+        planGen = planGen,
+        cacheKey = key,
+        ctx = ctx,
+        rows = rows,
+        seedBufferTipData = seedBufferTipData,
+        growJobs = {},
+        plantIntent = plantIntent,
+        refineIntent = refineIntent,
+        refineIntents = refineIntent and { refineIntent } or {},
+        buyIntent = buyIntent,
+        brewIntent = brewIntent,
+        demand = demand,
+        brewBlocks = {},
+        reservations = {},
+        builtAt = (type(GetGameTime) == "function" and GetGameTime()) or 0,
+    }
+    PublishPlan(plan, key, nil)
+    PerfEnd("Planner.Build")
+    return plan
+end
+
+----------------------------------------------------------------
+-- Public API
+----------------------------------------------------------------
+
+function Planner.SettingsHash()
+    return SettingsHash()
+end
+
+function Planner.CacheKeyFromGens()
+    return FormatCacheKey(ReadGens())
+end
+
+function Planner.NonSnapGensKey()
+    return NonSnapGensKey(ReadGens())
+end
+
+function Planner.BuildContext()
+    local ctx = ReadGens()
+    ctx.watches = StockPiler4.Watch and StockPiler4.Watch.GetWatches and StockPiler4.Watch.GetWatches() or {}
+    return ctx
+end
+
+function Planner.IsHaveCacheWarmForSnap()
+    return IsHaveCacheWarmForSnap()
+end
+
+function Planner.WarmSpecHaveCache(specs)
+    return WarmSpecHaveCache(specs)
+end
+
+function Planner.WarmSpecHaveCacheForWatches()
+    return WarmSpecHaveCacheForWatches()
+end
+
+--- FrameWork prewarm alias (must warm watched specs, not empty cache).
+function Planner.WarmHave()
+    return WarmSpecHaveCacheForWatches()
+end
+
+--- Frame-slice: collect+CountByUid this frame; bag pass next (see FrameWork.EnqueueWarmHave).
+function Planner.BeginWarmHaveSlice()
+    return BeginWarmHaveSlice()
+end
+
+function Planner.FinishWarmHaveSlice()
+    return FinishWarmHaveSlice()
+end
+
+function Planner.CountItemsMatchingSpec(spec, opts)
+    return CountItemsMatchingSpec(spec, opts)
+end
+
+function Planner.BuildBalancedSpecDemand(opts)
+    local DP = StockPiler4.DemandPlan
+    if DP and DP.Build then
+        return DP.Build(opts)
+    end
+    return {}
+end
+
+--- Quiet-end: force next EnsureHaveCache / demand build to refresh counts.
+function Planner.InvalidateHaveCacheAfterQuiet()
+    Planner._specHaveSnapGen = -1
+    Planner._specHaveWarmedSnap = nil
+    Planner._demandCacheKey = nil
+    Planner._warmHaveSlice = nil
+    -- Live craftable must recount after plant/harvest quiet; otherwise Watch can
+    -- sit on Restocking with stale craftable=0 until a force Build (/sp4 dumpall).
+    local PS = StockPiler4.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    if type(plan) == "table" and type(plan.rows) == "table" then
+        for i = 1, #plan.rows do
+            local row = plan.rows[i]
+            if type(row) == "table" then
+                row._craftableSnapGen = -1
+            end
+        end
+    end
+end
+
+function Planner.BottleGap(target, stock, craftable)
+    return BottleGap(target, stock, craftable)
+end
+
+function Planner.CollectAutoGrowFocus()
+    return CollectFocus("grow")
+end
+
+function Planner.CollectAutoBuyFocus()
+    return CollectFocus("buy")
+end
+
+function Planner.WatchStillNeedsGrow(potion, recipe, target, watchKey)
+    return WatchStillNeedsGrow(potion, recipe, target, watchKey)
+end
+
+function Planner.FocusSpecKeys(focus)
+    return FocusSpecKeys(focus)
+end
+
+function Planner.FocusBottleneckForSpec(specKey, focus, demand)
+    return FocusBottleneckForSpec(specKey, focus, demand)
+end
+
+function Planner.CollectAutoGrowSeedLines()
+    return CollectAutoGrowSeedLines()
+end
+
+--- Vendor AutoBuy jobs: hydrated spec + exemplar uid; match by MS.Matches not uid-only.
+function Planner.CollectVendorBuyJobs(opts)
+    opts = type(opts) == "table" and opts or {}
+    local jobs = {}
+    Planner._vendorBuyJobsMeta = {
+        source = "none",
+        maxBottleGap = nil,
+        focusWatchCount = 0,
+        skippedContainers = false,
+    }
+    local Inv = StockPiler4.Inventory
+    if Inv and Inv._ready ~= true then
+        return jobs
+    end
+    local MS = MaterialSpec()
+    local Caps = StockPiler4.TradeSkillCaps
+    local allowPlantBuys = opts.allowPlantBuys
+    if allowPlantBuys == nil then
+        allowPlantBuys = not (Caps and Caps.CanAutoGrow and Caps.CanAutoGrow() == true)
+    end
+
+    local function AddBuyNeed(pool, spec, role, need, bottleGap)
+        if type(spec) ~= "table" or (tonumber(need) or 0) <= 0 then
+            return
+        end
+        role = role or spec.role
+        if SpecIsHarvestByproduct(spec) then
+            return
+        end
+        local kind = "buy"
+        if SpecIsGrowable(spec, role) then
+            kind = "plant"
+            if allowPlantBuys ~= true then
+                return
+            end
+        end
+        local specKey = SpecKey(spec)
+        if specKey == nil then
+            return
+        end
+        local row = pool[specKey]
+        if row == nil then
+            local uid = tonumber(spec.uid) or tonumber(spec.boundUid) or 0
+            local label = (MS and MS.Label and MS.Label(spec)) or tostring(role or "mat")
+            row = {
+                kind = kind,
+                growable = kind == "plant",
+                spec = spec,
+                role = role or spec.role,
+                uid = uid,
+                uniqueID = uid,
+                specKey = specKey,
+                acquireKey = "sk:" .. tostring(specKey),
+                absolute = 0,
+                label = label,
+                name = label,
+                bottleGap = nil,
+            }
+            pool[specKey] = row
+        end
+        row.absolute = (tonumber(row.absolute) or 0) + (tonumber(need) or 0)
+        local gap = tonumber(bottleGap)
+        if gap ~= nil and (row.bottleGap == nil or gap > row.bottleGap) then
+            row.bottleGap = gap
+        end
+    end
+
+    local function JobsFromPool(pool)
+        local out = {}
+        local specs = {}
+        for _, row in pairs(pool) do
+            specs[#specs + 1] = row.spec
+        end
+        WarmSpecHaveCache(specs)
+        for specKey, row in pairs(pool) do
+            local have = CountItemsMatchingSpec(row.spec)
+            local deficit = math.max(0, (tonumber(row.absolute) or 0) - have)
+            if deficit > 0 then
+                out[#out + 1] = {
+                    kind = row.kind or "buy",
+                    growable = row.growable == true or row.kind == "plant",
+                    spec = row.spec,
+                    role = row.role,
+                    uid = row.uid,
+                    uniqueID = row.uid,
+                    have = have,
+                    need = row.absolute,
+                    deficit = deficit,
+                    specKey = specKey,
+                    acquireKey = row.acquireKey,
+                    label = row.label,
+                    name = row.label,
+                    bottleGap = row.bottleGap,
+                }
+            end
+        end
+        table.sort(out, function(a, b)
+            local ar = (a and a.role) or ""
+            local br = (b and b.role) or ""
+            if ar == "container" and br ~= "container" then
+                return true
+            end
+            if br == "container" and ar ~= "container" then
+                return false
+            end
+            local ad = tonumber(a and a.deficit) or 0
+            local bd = tonumber(b and b.deficit) or 0
+            if ad ~= bd then
+                return ad > bd
+            end
+            return ToNarrow(a and (a.label or a.name)) < ToNarrow(b and (b.label or b.name))
+        end)
+        return out
+    end
+
+    local function FillPoolFromWatches(pool, watches)
+        if type(watches) ~= "table" then
+            return
+        end
+        for i = 1, #watches do
+            local fw = watches[i]
+            local recipe = fw and fw.recipe
+            local deficit = math.max(0, (tonumber(fw and fw.target) or 0) - (tonumber(fw and fw.stock) or 0))
+            if type(recipe) == "table" and deficit > 0 then
+                local RS = RecipeSpec()
+                if RS and RS.HydrateRecipeSlots then
+                    RS.HydrateRecipeSlots(recipe)
+                end
+                local craftsNeeded = CraftsNeededForDeficit(deficit, recipe)
+                local slots = recipe.slots or {}
+                for j = 1, #slots do
+                    local slot = slots[j]
+                    local spec = ResolveSlotSpec(slot)
+                    if type(spec) == "table" then
+                        local per = EffectivePerCraft(slot, slots)
+                        AddBuyNeed(
+                            pool,
+                            spec,
+                            slot.role or spec.role,
+                            craftsNeeded * per,
+                            fw.bottleGap
+                        )
+                    end
+                end
+            end
+        end
+    end
+
+    -- All buy candidates (not atMax-only): SpecKey pool sums shared flasks/mats.
+    local focus = CollectFocus("buy")
+    local watches = type(focus.allWatches) == "table" and focus.allWatches or focus.watches
+    local watchCount = type(watches) == "table" and #watches or 0
+    Planner._vendorBuyJobsMeta.maxBottleGap = focus.maxBottleGap
+    Planner._vendorBuyJobsMeta.focusWatchCount = watchCount
+    Planner._vendorBuyJobsMeta.skippedContainers = false
+    local pool = {}
+    FillPoolFromWatches(pool, watches)
+    jobs = JobsFromPool(pool)
+    Planner._vendorBuyJobsMeta.source = (#jobs > 0) and "all" or "none"
+    return jobs
+end
+
+--- Deprecated: do not mutate snapshot rows from View/domain. Coalesced rebuild only.
+function Planner.PatchWatchRowsLiveCounts(rows, opts)
+    local Sch = StockPiler4.Scheduler
+    if Sch and Sch.EnqueuePlanRebuild then
+        Sch.EnqueuePlanRebuild({ nudge = true })
+    end
+end
+
+--- Flip Enable AutoGrow <-> Restocking on current plan + optional extra rows (listData).
+--- Call from Watch UI after master/per-watch AutoGrow toggles - do not wait for rebuild.
+function Planner.ReconcileAutoGrowStatusesNow(extraRows)
+    local changed = false
+    local PS = StockPiler4.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    if type(plan) == "table" and type(plan.rows) == "table" then
+        if ReconcileAutoGrowStatusesForRows(plan.rows) then
+            changed = true
+        end
+        -- Armed set changed -> Shared contest membership must refresh.
+        if PolishSharedContest(plan.rows) then
+            changed = true
+        end
+        if RefreshSkillUpWatchRows(plan.rows, { syncSnapshot = true }) then
+            changed = true
+        end
+    end
+    if type(extraRows) == "table" and extraRows ~= (plan and plan.rows) then
+        if ReconcileAutoGrowStatusesForRows(extraRows) then
+            changed = true
+        end
+        if PolishSharedContest(extraRows) then
+            changed = true
+        end
+        if RefreshSkillUpWatchRows(extraRows, { syncSnapshot = false }) then
+            changed = true
+        end
+    end
+    if changed then
+        InvalidateFocusCaches()
+    end
+    return changed
+end
+
+function Planner.HasReadyToCraft()
+    local Brew = StockPiler4.Brew
+    if Brew and Brew.HasReadyToCraft then
+        return Brew.HasReadyToCraft() == true
+    end
+    return HasReadyToCraftFromPlan()
+end
+
+--- Closed-window: enqueue plan rebuild for live status (no in-place row mutation).
+--- Returns false; craft-ready deltas arrive after rebuild.
+function Planner.SyncLiveStatusClosedWindow()
+    local PS = StockPiler4.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    if type(plan) ~= "table" or type(plan.rows) ~= "table" or #plan.rows == 0 then
+        return false
+    end
+    local Sch = StockPiler4.Scheduler
+    if Sch and Sch.EnqueuePlanRebuild then
+        Sch.EnqueuePlanRebuild({ nudge = true })
+    end
+    local Brew = StockPiler4.Brew
+    if Brew and Brew.InvalidateCanBrewCache then
+        Brew.InvalidateCanBrewCache()
+    end
+    if Brew and Brew.MaybeNotifyBrewReady then
+        Brew.MaybeNotifyBrewReady()
+    end
+    if StockPiler4.Grow and StockPiler4.Grow.MaybeNotifyAutoGrowStall then
+        StockPiler4.Grow.MaybeNotifyAutoGrowStall()
+    end
+    return false
+end
+
+function Planner.CanCheapOrGardenPatch()
+    local PS = StockPiler4.PlanSnapshot
+    local stale = PS and PS.Get and PS.Get()
+    if type(stale) ~= "table" or type(stale.rows) ~= "table" or #stale.rows == 0 then
+        return false
+    end
+    if type(stale.ctx) ~= "table" then
+        return false
+    end
+    local cur = ReadGens()
+    if StructuralNonRefineKey(stale.ctx) == StructuralNonRefineKey(cur) then
+        return true
+    end
+    if RecipeStructuralKey(stale.ctx) == RecipeStructuralKey(cur) then
+        return true
+    end
+    return false
+end
+
+function Planner.TryCheapRebuild()
+    return TryCheapRebuild()
+end
+
+function Planner.TryGardenPatch()
+    return TryGardenPatch()
+end
+
+function Planner.Build(opts)
+    opts = type(opts) == "table" and opts or {}
+    local PS = StockPiler4.PlanSnapshot
+    if opts.force ~= true and PS and PS.GetCacheKey then
+        local key = Planner.CacheKeyFromGens()
+        if PS.GetCacheKey() == key then
+            local cached = PS.Get and PS.Get()
+            if type(cached) == "table" then
+                return cached
+            end
+        end
+    end
+    if opts.force ~= true then
+        local cheap = TryCheapRebuild()
+        if type(cheap) == "table" then
+            return cheap
+        end
+        local patched = TryGardenPatch()
+        if type(patched) == "table" then
+            return patched
+        end
+    end
+    return BuildFull(opts)
+end
+
+--- Prefer PlanSnapshot.GetOrBuild so refresh=false never sync-builds while pending.
+function Planner.GetOrBuild(opts)
+    opts = type(opts) == "table" and opts or {}
+    local PS = StockPiler4.PlanSnapshot
+    if PS and PS.GetOrBuild then
+        return PS.GetOrBuild(opts)
+    end
+    local Sch = StockPiler4.Scheduler
+    if Sch and Sch.IsPlanRebuildPending and Sch.IsPlanRebuildPending() == true then
+        return PS and PS.Get and PS.Get() or nil
+    end
+    if opts.refresh == false then
+        if Sch and Sch.EnqueuePlanRebuild then
+            Sch.EnqueuePlanRebuild({ nudge = true })
+        end
+        return PS and PS.Get and PS.Get() or nil
+    end
+    return Planner.Build(opts)
+end
+
+function Planner.InvalidatePlanCache()
+    if StockPiler4.PlanSnapshot and StockPiler4.PlanSnapshot.Invalidate then
+        StockPiler4.PlanSnapshot.Invalidate()
+    end
+end
+
+----------------------------------------------------------------
+-- Dumps
+----------------------------------------------------------------
+
+local function DumpWatchRows(emit, rows, planMeta)
+    planMeta = type(planMeta) == "table" and planMeta or {}
+    emit("=== StockPiler4 watchplan ===")
+    emit(string.format(
+        "  watches=%d planGen=%s",
+        type(rows) == "table" and #rows or 0,
+        tostring(planMeta.planGen or Planner._planGen or 0)
+    ))
+    if type(rows) ~= "table" then
+        emit("=== end watchplan ===")
+        return
+    end
+    for i = 1, #rows do
+        local row = rows[i]
+        if type(row) == "table" then
+            local gap = tonumber(row.bottleGap)
+            if gap == nil then
+                gap = BottleGap(row.potionMin or row.target, row.potionHave, row.craftable)
+            end
+            emit(string.format(
+                "  [%d] %s key=%s status=%s stock=%s/%s deficit=%s craftable=%s shared=%s bottleGap=%s autoGrow=%s",
+                i,
+                ToNarrow(row.name),
+                tostring(row.potionKey or ""),
+                tostring(row.statusKey or ""),
+                tostring(row.potionHave or 0),
+                tostring(row.potionMin or row.target or 0),
+                tostring(row.potionDeficit or 0),
+                tostring(row.craftable or 0),
+                tostring(row.craftableShared == true),
+                tostring(gap),
+                tostring(row.autoGrow == true)
+            ))
+            if row.statusText ~= nil then
+                emit("      statusText=" .. ToNarrow(row.statusText))
+            end
+            local seedUids = row.seedBufferSeedUids
+            if type(seedUids) == "table" and #seedUids > 0 then
+                local parts = {}
+                for u = 1, #seedUids do
+                    local uid = tonumber(seedUids[u]) or 0
+                    local credit = 0
+                    local Refine = StockPiler4.Refine
+                    if uid > 0 and Refine and Refine.GetSeedBudget then
+                        local b = Refine.GetSeedBudget(uid)
+                        credit = tonumber(b and b.credit) or 0
+                    end
+                    parts[#parts + 1] = tostring(uid) .. "@" .. tostring(credit)
+                end
+                emit("      seedBufferUids=" .. table.concat(parts, ","))
+            end
+            local tips = row.statusTipSlots
+            if type(tips) == "table" then
+                for t = 1, #tips do
+                    local e = tips[t]
+                    if type(e) == "table" then
+                        emit(string.format(
+                            "      slot role=%s kind=%s have=%s need=%s key=%s note=%s refine=%s",
+                            tostring(e.role or "?"),
+                            tostring(e.kind or "?"),
+                            tostring(e.have or 0),
+                            tostring(e.need or 0),
+                            tostring(
+                                (e.spec and StockPiler4.MaterialSpec and StockPiler4.MaterialSpec.Key
+                                    and StockPiler4.MaterialSpec.Key(e.spec))
+                                    or e.specKey
+                                    or ""
+                            ),
+                            tostring(e.note or ""),
+                            tostring(e.needsRefine == true)
+                        ))
+                    end
+                end
+            end
+        end
+    end
+    emit("=== end watchplan ===")
+end
+
+function Planner.DumpWatchPlan(emit)
+    emit = MakeEmit(emit)
+    local watches = StockPiler4.Watch and StockPiler4.Watch.GetWatches and StockPiler4.Watch.GetWatches() or {}
+    local enabledN = 0
+    local stubN = 0
+    if type(watches) == "table" then
+        for _, w in pairs(watches) do
+            if type(w) == "table" then
+                if w.enabled == true then
+                    enabledN = enabledN + 1
+                else
+                    stubN = stubN + 1
+                end
+            end
+        end
+    end
+    emit(string.format("  enabledWatches=%d disabledStubs=%d", enabledN, stubN))
+    local plan = nil
+    if StockPiler4.Planner and StockPiler4.Planner.Build then
+        plan = StockPiler4.Planner.Build({ force = true })
+    else
+        local PS = StockPiler4.PlanSnapshot
+        plan = PS and PS.Get and PS.Get()
+    end
+    DumpWatchRows(emit, plan and plan.rows, plan)
+end
+
+function Planner.Dump(emit)
+    emit = MakeEmit(emit)
+    local g = ReadGens()
+    emit("=== StockPiler4 plan ===")
+    emit(string.format(
+        "  key=%s warmHave=%s planGen=%s",
+        Planner.CacheKeyFromGens(),
+        tostring(IsHaveCacheWarmForSnap()),
+        tostring(Planner._planGen or 0)
+    ))
+    emit(string.format(
+        "  gens snap=%s garden=%s refine=%s watch=%s know=%s settings=%s",
+        tostring(g.snapGen), tostring(g.gardenGen), tostring(g.refineGen),
+        tostring(g.watchGen), tostring(g.knowledgeGen), tostring(g.settingsHash)
+    ))
+    emit(string.format("  hasReady=%s", tostring(Planner.HasReadyToCraft())))
+    local PS = StockPiler4.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    DumpWatchRows(emit, plan and plan.rows, plan)
+    emit("=== end plan ===")
+end
+
+function Planner.DumpGrowPlan(emit)
+    emit = MakeEmit(emit)
+    emit("=== StockPiler4 growplan ===")
+    local focus = CollectFocus("grow")
+    emit(string.format(
+        "  maxBottleGap=%s focusWatches=%d autoGrowMaster=%s fromPlan=%s planGen=%s",
+        tostring(focus.maxBottleGap),
+        type(focus.watches) == "table" and #focus.watches or 0,
+        tostring(StockPiler4.Watch and StockPiler4.Watch.IsAutoGrowEnabled
+            and StockPiler4.Watch.IsAutoGrowEnabled()),
+        tostring(focus.fromPlan == true),
+        tostring(focus.planGen or 0)
+    ))
+    local bad = 0
+    if type(focus.watches) == "table" then
+        for i = 1, #focus.watches do
+            local w = focus.watches[i]
+            emit(string.format(
+                "  focus[%d] %s gap=%s stock=%s/%s craftable=%s shared=%s status=%s",
+                i,
+                ToNarrow(w.name),
+                tostring(w.bottleGap),
+                tostring(w.stock),
+                tostring(w.target),
+                tostring(w.craftable),
+                tostring(w.craftableShared == true),
+                tostring(w.statusKey or "")
+            ))
+            local key = tostring(w.potionKey or "")
+            if not WatchWantsAutoGrow(key, nil) then
+                bad = bad + 1
+                emit("      ASSERT fail not-armed key=" .. key)
+            else
+                local gap = tonumber(w.bottleGap) or 0
+                local okStill = gap > 0 or w.craftableShared == true
+                    or tostring(w.statusKey or "") == "need_seeds"
+                    or tostring(w.statusKey or "") == "buy_ingredients"
+                if not okStill then
+                    bad = bad + 1
+                    emit("      ASSERT fail no-gap/shared/need_seeds key=" .. key)
+                end
+            end
+        end
+    end
+    emit(string.format("  focusAssertFails=%d", bad))
+    local DP = StockPiler4.DemandPlan
+    local demand = DP and DP.Build and DP.Build() or {}
+    local n = 0
+    local SM = StockPiler4.SeedMap
+    local Grow = StockPiler4.Grow
+    emit(string.format(
+        "  resinFeedstock=%s",
+        tostring(type(demand) == "table" and demand._resinFeedstock)
+    ))
+    for _, row in pairs(demand) do
+        if type(row) == "table" and type(row.spec) == "table" then
+            n = n + 1
+            local isByproduct = row.isByproduct == true
+                or (SM and SM.IsHarvestByproduct and SM.IsHarvestByproduct(row.spec) == true)
+            local convertExtra = tonumber(row.byproductConvertExtra) or 0
+            local show = (tonumber(row.deficit) or 0) > 0 or convertExtra > 0 or isByproduct
+            if show then
+                local plantUid = tonumber(row.plantUid) or 0
+                local seedUid = tonumber(row.seedUid) or 0
+                local resolveNote = ""
+                if isByproduct then
+                    resolveNote = " convert-byproduct"
+                elseif plantUid <= 0 then
+                    resolveNote = " no-plant-uid"
+                elseif seedUid <= 0 then
+                    resolveNote = " no-seed"
+                end
+                if convertExtra > 0 then
+                    resolveNote = resolveNote .. " convertExtra=" .. tostring(convertExtra)
+                end
+                local brewAbs = tonumber(row.brewAbsolute)
+                if brewAbs == nil then
+                    brewAbs = tonumber(row.absolute) or 0
+                end
+                emit(string.format(
+                    "  demand %s role=%s have=%s abs=%s brewAbs=%s short=%s plantUid=%s seedUid=%s%s",
+                    tostring(row.specKey),
+                    tostring(row.role),
+                    tostring(row.have),
+                    tostring(row.absolute),
+                    tostring(brewAbs),
+                    tostring(row.craftsShort),
+                    tostring(plantUid),
+                    tostring(seedUid),
+                    resolveNote
+                ))
+            end
+        end
+    end
+    emit(string.format("  demandSpecs=%d", n))
+    if Grow and Grow.GetPlantJob then
+        local job = Grow.GetPlantJob()
+        if type(job) == "table" then
+            emit(string.format(
+                "  plantJob mode=%s role=%s seedUid=%s plantUid=%s reason=%s craftsShort=%s bottleneck=%s share=%s",
+                tostring(job.pickMode),
+                tostring(job.role),
+                tostring(job.seedUid),
+                tostring(job.plantUid),
+                tostring(job.plantReason),
+                tostring(job.craftsShort),
+                tostring(job.bottleneckScore),
+                tostring(job.focusShare)
+            ))
+        else
+            local nilReason = "unplantable"
+            if Grow.HasEmptyPlot and Grow.HasEmptyPlot() ~= true then
+                nilReason = "plots-busy"
+            else
+                local anyShort = false
+                local anyGrowableShort = false
+                local anyBuyOnlyShort = false
+                local anyPlantUid = false
+                local anySeed = false
+                local anyBagSeed = false
+                local anyRefineFirst = false
+                local Refine = StockPiler4.Refine
+                for _, row in pairs(demand) do
+                    if type(row) == "table" and type(row.spec) == "table"
+                        and (tonumber(row.craftsShort) or 0) > 0
+                    then
+                        anyShort = true
+                        local growable = SM and SM.IsGrowableSpec and SM.IsGrowableSpec(row.spec) == true
+                        local byproduct = row.isByproduct == true
+                            or (SM and SM.IsHarvestByproduct and SM.IsHarvestByproduct(row.spec) == true)
+                        if growable == true and byproduct ~= true then
+                            anyGrowableShort = true
+                            local pUid = tonumber(row.plantUid) or 0
+                            if pUid <= 0 and SM.FindPlantUidForSpec then
+                                pUid = tonumber(SM.FindPlantUidForSpec(row.spec)) or 0
+                            end
+                            if pUid > 0 then
+                                anyPlantUid = true
+                            end
+                            local sUid = tonumber(row.seedUid) or 0
+                            if sUid <= 0 and SM.ResolveSeedForSpec then
+                                local seed = SM.ResolveSeedForSpec(row.spec)
+                                sUid = type(seed) == "table" and (tonumber(seed.uniqueID or seed.uid) or 0) or 0
+                            end
+                            if sUid > 0 then
+                                anySeed = true
+                                local Inv = StockPiler4.Inventory
+                                local bag = Inv and Inv.CountByUid and tonumber(Inv.CountByUid(sUid)) or 0
+                                if bag > 0 then
+                                    anyBagSeed = true
+                                elseif pUid > 0 and Refine and Refine.CountRefinablePlants then
+                                    local refn = tonumber(Refine.CountRefinablePlants(pUid, row.spec)) or 0
+                                    if refn > 0 then
+                                        anyRefineFirst = true
+                                    end
+                                end
+                            elseif pUid > 0 and Refine and Refine.CountRefinablePlants then
+                                local refn = tonumber(Refine.CountRefinablePlants(pUid, row.spec)) or 0
+                                if refn > 0 then
+                                    anyRefineFirst = true
+                                end
+                            end
+                        else
+                            anyBuyOnlyShort = true
+                        end
+                    end
+                end
+                if not anyShort then
+                    nilReason = "no-demand-short"
+                elseif not anyGrowableShort then
+                    -- Flasks / butcher / resin only - grow correctly handed off.
+                    -- plant_stock may still run (soft gate); GetPlantJob above would
+                    -- have returned a job if so — nil here means plant floors also idle.
+                    nilReason = anyBuyOnlyShort and "buy-only-short" or "no-growable-short"
+                elseif not anyPlantUid then
+                    nilReason = "no-plant-uid"
+                elseif anyRefineFirst and not anyBagSeed then
+                    nilReason = "refine-first"
+                elseif not anySeed then
+                    nilReason = "no-seed"
+                elseif not anyBagSeed then
+                    nilReason = "no-bag-seed"
+                elseif anyBuyOnlyShort then
+                    -- Growables + bag seeds exist but picker still nil (buffer/fill gate etc.).
+                    nilReason = "picker-nil-with-buy-short"
+                end
+            end
+            emit("  plantJob=nil reason=" .. tostring(nilReason))
+        end
+    end
+    local tip = nil
+    local PS = StockPiler4.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    if type(plan) == "table" then
+        tip = plan.seedBufferTipData
+    end
+    if type(tip) == "table" then
+        emit(string.format(
+            "  seedBuffer enabled=%s buffer=%s watched=%d intents=%d",
+            tostring(tip.enabled),
+            tostring(tip.buffer),
+            type(tip.watched) == "table" and #tip.watched or 0,
+            type(tip.intents) == "table" and #tip.intents or 0
+        ))
+        local watched = tip.watched
+        if type(watched) == "table" then
+            for i = 1, #watched do
+                local rec = watched[i]
+                if type(rec) == "table" then
+                    emit(string.format(
+                        "    seed uid=%s live=%s ground=%s planned=%s total=%s shortBy=%s key=%s",
+                        tostring(rec.seedUid or 0),
+                        tostring(rec.live or 0),
+                        tostring(rec.ground or 0),
+                        tostring(rec.planned or 0),
+                        tostring(rec.total or 0),
+                        tostring(rec.shortBy or 0),
+                        tostring(rec.key or "")
+                    ))
+                end
+            end
+        end
+    end
+    if Grow and Grow.DumpPlantJob then
+        Grow.DumpPlantJob(emit)
+    end
+    emit("=== end growplan ===")
+end
+
+function Planner.DumpBrewPlan(emit)
+    emit = MakeEmit(emit)
+    emit("=== StockPiler4 brewplan ===")
+    local Brew = StockPiler4.Brew
+    local blockedWhy = Brew and Brew.AutoBrewBlockedReason and Brew.AutoBrewBlockedReason() or nil
+    emit(string.format("  hasReady=%s canBrew=%s autoBlocked=%s respectGrowReserve=%s",
+        tostring(Planner.HasReadyToCraft()),
+        tostring(Brew and Brew.CanBrewNow and Brew.CanBrewNow()),
+        tostring(blockedWhy or "no"),
+        tostring(RespectGrowReserve())))
+    local Grow = StockPiler4.Grow
+    emit(string.format(
+        "  bufferSatisfied=%s bufferShort=%s pendingRefine=%s pendingPlant=%s refineOut=%s",
+        tostring(Grow and Grow.IsSeedBufferSatisfied and Grow.IsSeedBufferSatisfied()),
+        tostring(Grow and Grow.HasAnyBufferShort and Grow.HasAnyBufferShort()),
+        tostring(Grow and Grow.HasPendingBufferRefine and Grow.HasPendingBufferRefine()),
+        tostring(Grow and Grow.HasPendingPlant and Grow.HasPendingPlant()),
+        tostring(StockPiler4.RefinePipeline and StockPiler4.RefinePipeline.HasOutstanding
+            and StockPiler4.RefinePipeline.HasOutstanding())
+    ))
+    local PS = StockPiler4.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    if type(plan) == "table" and type(plan.rows) == "table" then
+        for i = 1, #plan.rows do
+            local row = plan.rows[i]
+            if type(row) == "table" and RowIsReadyToCraft(row) then
+                emit(string.format(
+                    "  ready %s deficit=%s craftable=%s",
+                    ToNarrow(row.name),
+                    tostring(row.potionDeficit),
+                    tostring(row.craftable)
+                ))
+            end
+        end
+    end
+    if Brew and Brew.DumpSession then
+        Brew.DumpSession(emit)
+    end
+    emit("=== end brewplan ===")
+end

@@ -1,0 +1,147 @@
+----------------------------------------------------------------
+-- StockPiler4 Stores/KnowledgeStore - account learned-data facade
+----------------------------------------------------------------
+
+StockPiler4 = StockPiler4 or {}
+StockPiler4.Knowledge = StockPiler4.Knowledge or {}
+local Know = StockPiler4.Knowledge
+
+local ACCOUNT_TABLES = { "items", "grows", "refines", "recipes", "potions", "additives", "vendorItems" }
+
+Know._gen = 0
+Know._ensuring = false
+
+local function IsAllowedTable(name)
+    for i = 1, #ACCOUNT_TABLES do
+        if ACCOUNT_TABLES[i] == name then
+            return true
+        end
+    end
+    return false
+end
+
+local function EnsureAccountTables(acct)
+    if type(acct) ~= "table" then
+        return false
+    end
+    for i = 1, #ACCOUNT_TABLES do
+        local k = ACCOUNT_TABLES[i]
+        if type(acct[k]) ~= "table" then
+            acct[k] = {}
+        end
+    end
+    return true
+end
+
+function Know.GetGen()
+    return tonumber(Know._gen) or 0
+end
+
+--- Shape Account knowledge tables. Does not call Persistence.EnsureAccount
+--- (that would recurse via GetAccount/Recipes during migrate).
+function Know.Ensure()
+    if Know._ensuring == true then
+        return type(StockPiler4.Account) == "table"
+    end
+    Know._ensuring = true
+    local ok = false
+    local acct = StockPiler4.Account
+    if type(acct) ~= "table" then
+        -- Caller (Bootstrap / Persistence) must create Account first.
+        Know._ensuring = false
+        return false
+    end
+    ok = EnsureAccountTables(acct)
+    Know._ensuring = false
+    return ok
+end
+
+--- Run fingerprint migrate once Account tables exist (Bootstrap after EnsureAccount).
+function Know.MigrateFingerprints()
+    if StockPiler4.RecipeSpec and StockPiler4.RecipeSpec.MigrateRecipeFingerprintsV2 then
+        StockPiler4.RecipeSpec.MigrateRecipeFingerprintsV2()
+    end
+    if StockPiler4.RecipeSpec and StockPiler4.RecipeSpec.MigrateRecipeFingerprintsV3 then
+        StockPiler4.RecipeSpec.MigrateRecipeFingerprintsV3()
+    end
+    if StockPiler4.RecipeSpec and StockPiler4.RecipeSpec.MigrateRecipeFingerprintsV4 then
+        StockPiler4.RecipeSpec.MigrateRecipeFingerprintsV4()
+    end
+    if StockPiler4.RecipeSpec and StockPiler4.RecipeSpec.MigratePotionEffectKeys then
+        StockPiler4.RecipeSpec.MigratePotionEffectKeys()
+    end
+    if StockPiler4.SeedMap and StockPiler4.SeedMap.MigratePlantEffectsFromSeeds then
+        StockPiler4.SeedMap.MigratePlantEffectsFromSeeds()
+    end
+    -- After EFFECT stamps / scrub, remaps watches whose rk: drifted (uid:→fx:).
+    if StockPiler4.RecipeSpec and StockPiler4.RecipeSpec.HealWatchRecipeFingerprints then
+        StockPiler4.RecipeSpec.HealWatchRecipeFingerprints()
+    end
+end
+
+function Know.GetAccount()
+    local acct = StockPiler4.Account
+    if type(acct) == "table" then
+        EnsureAccountTables(acct)
+        return acct
+    end
+    -- Create once; EnsureAccount must not re-enter GetAccount/Ensure migrate.
+    if StockPiler4.Persistence and StockPiler4.Persistence.EnsureAccount then
+        return StockPiler4.Persistence.EnsureAccount()
+    end
+    return nil
+end
+
+function Know.GetTable(name)
+    if type(name) ~= "string" or name == "" or not IsAllowedTable(name) then
+        return nil
+    end
+    local acct = Know.GetAccount()
+    if type(acct) ~= "table" then
+        return nil
+    end
+    if type(acct[name]) ~= "table" then
+        acct[name] = {}
+    end
+    return acct[name]
+end
+
+function Know.Items()
+    return Know.GetTable("items")
+end
+
+function Know.Grows()
+    return Know.GetTable("grows")
+end
+
+function Know.Refines()
+    return Know.GetTable("refines")
+end
+
+function Know.Recipes()
+    return Know.GetTable("recipes")
+end
+
+function Know.Potions()
+    return Know.GetTable("potions")
+end
+
+function Know.Additives()
+    return Know.GetTable("additives")
+end
+
+function Know.VendorItems()
+    return Know.GetTable("vendorItems")
+end
+
+function Know.Touch(reason)
+    Know._gen = (tonumber(Know._gen) or 0) + 1
+    if StockPiler4.Debug and StockPiler4.Debug.LogOp then
+        StockPiler4.Debug.LogOp("know", "touch gen=" .. tostring(Know._gen) .. " reason=" .. tostring(reason or ""))
+    end
+    local B = StockPiler4.EventBus
+    local E = StockPiler4.Events
+    if B and B.Fire and E and E.KNOWLEDGE_UPDATED then
+        B.Fire(E.KNOWLEDGE_UPDATED, { reason = tostring(reason or ""), gen = Know._gen })
+    end
+end

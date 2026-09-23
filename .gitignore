@@ -1,0 +1,11 @@
+# StockPiler4 local ignores
+*.log
+.DS_Store
+Thumbs.db
+*.bak
+*.tmp
+tools/out/
+tools/__pycache__/
+GameData.Sound.txt
+Sound.txt
+

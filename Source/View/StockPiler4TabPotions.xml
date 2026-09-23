@@ -1,0 +1,287 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <Scripts>
+        <Script file="Source/View/StockPiler4TabPotions.lua" />
+    </Scripts>
+    <Windows>
+        <Window name="StockPiler4TabPotions" movable="false">
+            <Anchors>
+                <Anchor point="topleft" relativePoint="topleft" relativeTo="StockPiler4WindowSocket">
+                    <AbsPoint x="0" y="0" />
+                </Anchor>
+                <Anchor point="bottomright" relativePoint="bottomright" relativeTo="StockPiler4WindowSocket">
+                    <AbsPoint x="0" y="0" />
+                </Anchor>
+            </Anchors>
+            <EventHandlers>
+                <EventHandler event="OnInitialize" function="StockPiler4TabPotions.Initialize" />
+            </EventHandlers>
+            <Windows>
+                <Window name="$parentBanner">
+                    <Size>
+                        <AbsPoint x="500" y="88" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="0" y="0" />
+                        </Anchor>
+                        <Anchor point="topright" relativePoint="topright">
+                            <AbsPoint x="-20" y="0" />
+                        </Anchor>
+                    </Anchors>
+                    <Windows>
+                        <FullResizeImage name="$parentBackground" inherits="SettingsSectionBackground" />
+                        <Label name="$parentTitle" inherits="EA_Settings_SectionTitle">
+                            <Size>
+                                <AbsPoint x="400" y="22" />
+                            </Size>
+                            <Anchors>
+                                <Anchor point="topleft" relativePoint="topleft">
+                                    <AbsPoint x="12" y="4" />
+                                </Anchor>
+                            </Anchors>
+                        </Label>
+                        <Label name="$parentText" font="font_chat_text" maxchars="320" textalign="left" handleinput="false" wordwrap="true">
+                            <Size>
+                                <AbsPoint x="960" y="56" />
+                            </Size>
+                            <Anchors>
+                                <Anchor point="topleft" relativePoint="topleft">
+                                    <AbsPoint x="12" y="26" />
+                                </Anchor>
+                            </Anchors>
+                        </Label>
+                    </Windows>
+                </Window>
+
+                <!-- Filter row -->
+                <Label name="$parentSearchLabel" font="font_default_text_small" maxchars="12" textalign="rightcenter" handleinput="false">
+                    <Size>
+                        <AbsPoint x="56" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="0" y="92" />
+                        </Anchor>
+                    </Anchors>
+                </Label>
+                <EditBox name="$parentSearchBox" inherits="EA_EditBox_DefaultFrame" maxchars="48" input="text">
+                    <Size>
+                        <AbsPoint x="100" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="58" y="92" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnTextChanged" function="StockPiler4TabPotions.OnSearchChanged" />
+                    </EventHandlers>
+                </EditBox>
+                <Label name="$parentEffectLabel" font="font_default_text_small" maxchars="12" textalign="rightcenter" handleinput="false">
+                    <Size>
+                        <AbsPoint x="52" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="162" y="92" />
+                        </Anchor>
+                    </Anchors>
+                </Label>
+                <ComboBox name="$parentEffectCombo" inherits="EA_ComboBox_DefaultResizableSmall" handleinput="true">
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="218" y="92" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnSelChanged" function="StockPiler4TabPotions.OnEffectComboChanged" />
+                    </EventHandlers>
+                </ComboBox>
+
+                <!-- Headers: x/width must match StockPiler4PotionRow (chrome spans Watch..Forget). -->
+                <Button name="$parentSortWatch" inherits="StockPiler4_SortHeader" id="8">
+                    <Size>
+                        <AbsPoint x="40" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="0" y="132" />
+                        </Anchor>
+                    </Anchors>
+                    <Windows>
+                        <DynamicImage name="$parentEye" texture="EA_HUD_01" slice="LookingFor-Eye-Rollover" textureScale="0.5" handleinput="false">
+                            <Size>
+                                <AbsPoint x="16" y="12" />
+                            </Size>
+                            <Anchors>
+                                <Anchor point="left" relativePoint="left">
+                                    <AbsPoint x="8" y="0" />
+                                </Anchor>
+                            </Anchors>
+                        </DynamicImage>
+                        <DynamicImage name="$parentUpArrow" inherits="EA_ListSortUpArrow">
+                            <Anchors>
+                                <Anchor point="right" relativePoint="right">
+                                    <AbsPoint x="-4" y="0" />
+                                </Anchor>
+                            </Anchors>
+                        </DynamicImage>
+                        <DynamicImage name="$parentDownArrow" inherits="EA_ListSortDownArrow">
+                            <Anchors>
+                                <Anchor point="center" relativePoint="center" relativeTo="$parentUpArrow">
+                                    <AbsPoint x="0" y="0" />
+                                </Anchor>
+                            </Anchors>
+                        </DynamicImage>
+                    </Windows>
+                </Button>
+                <Button name="$parentSortName" inherits="StockPiler4_SortHeader" id="1" textalign="left">
+                    <Size>
+                        <AbsPoint x="296" y="28" />
+                    </Size>
+                    <TextOffset x="8" y="4" />
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="40" y="132" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentSortLevel" inherits="StockPiler4_SortHeader" id="9" textalign="left">
+                    <Size>
+                        <AbsPoint x="40" y="28" />
+                    </Size>
+                    <TextOffset x="2" y="4" />
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="336" y="132" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentSortEffect" inherits="StockPiler4_SortHeader" id="2" textalign="left">
+                    <Size>
+                        <AbsPoint x="72" y="28" />
+                    </Size>
+                    <TextOffset x="4" y="4" />
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="376" y="132" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentSortPower" inherits="StockPiler4_SortHeader" id="3" textalign="left">
+                    <Size>
+                        <AbsPoint x="56" y="28" />
+                    </Size>
+                    <TextOffset x="4" y="4" />
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="448" y="132" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentSortStability" inherits="StockPiler4_SortHeader" id="4" textalign="left">
+                    <Size>
+                        <AbsPoint x="64" y="28" />
+                    </Size>
+                    <TextOffset x="4" y="4" />
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="504" y="132" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentSortMultiplier" inherits="StockPiler4_SortHeader" id="10" textalign="left">
+                    <Size>
+                        <AbsPoint x="60" y="28" />
+                    </Size>
+                    <TextOffset x="4" y="4" />
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="568" y="132" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentSortSuperCrit" inherits="StockPiler4_SortHeader" id="5" textalign="left">
+                    <Size>
+                        <AbsPoint x="72" y="28" />
+                    </Size>
+                    <TextOffset x="4" y="4" />
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="628" y="132" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentSortYield" inherits="StockPiler4_SortHeader" id="6" textalign="left">
+                    <Size>
+                        <AbsPoint x="64" y="28" />
+                    </Size>
+                    <TextOffset x="4" y="4" />
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="700" y="132" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentSortHave" inherits="StockPiler4_SortHeader" id="7" textalign="left">
+                    <Size>
+                        <AbsPoint x="88" y="28" />
+                    </Size>
+                    <TextOffset x="4" y="4" />
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="764" y="132" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentSortRecipe" inherits="StockPiler4_StaticHeader">
+                    <Size>
+                        <AbsPoint x="80" y="28" />
+                    </Size>
+                    <TextOffset x="4" y="4" />
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="852" y="132" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentSortForget" inherits="StockPiler4_StaticHeader">
+                    <Size>
+                        <AbsPoint x="68" y="28" />
+                    </Size>
+                    <TextOffset x="4" y="4" />
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="932" y="132" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+
+                <ListBox name="$parentList" scrollbar="EA_ScrollBar_DefaultVerticalChain" rowdef="StockPiler4PotionRow" visiblerows="12" rowspacing="2">
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="0" y="162" />
+                        </Anchor>
+                        <Anchor point="bottomright" relativePoint="bottomright">
+                            <AbsPoint x="-6" y="-8" />
+                        </Anchor>
+                    </Anchors>
+                    <ListData table="StockPiler4TabPotions.listData" populationfunction="StockPiler4TabPotions.UpdateRows">
+                        <ListColumns>
+                            <ListColumn windowname="Name" variable="name" format="wstring" />
+                            <ListColumn windowname="Level" variable="levelText" format="wstring" />
+                            <ListColumn windowname="Effect" variable="effectText" format="wstring" />
+                            <ListColumn windowname="Power" variable="powerText" format="wstring" />
+                            <ListColumn windowname="Stability" variable="stabilityText" format="wstring" />
+                            <ListColumn windowname="Multiplier" variable="multiplierText" format="wstring" />
+                            <ListColumn windowname="SuperCrit" variable="superCritText" format="wstring" />
+                            <ListColumn windowname="Yield" variable="yieldText" format="wstring" />
+                            <ListColumn windowname="Have" variable="haveText" format="wstring" />
+                        </ListColumns>
+                    </ListData>
+                </ListBox>
+            </Windows>
+        </Window>
+    </Windows>
+</Interface>
