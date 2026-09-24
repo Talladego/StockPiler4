@@ -119,7 +119,9 @@ function CP.LadderForPlantWatch(spec, plantUid)
 end
 
 --- Watched plant stock resolve (never retargets to Cult-max).
---- climbNeedReq = Cult-max rung when Upgrade Seeds is on (climb destination only).
+--- climbNeedReq = Cult-usable destination when Upgrade Seeds is on
+--- (max(known ladder Cult-max, Cult floor) so SM-fishing continues past
+--- the highest discovered rung).
 function CP.ResolvePlantWatchTarget(watchPlantUid, watchSpec)
     watchPlantUid = tonumber(watchPlantUid) or 0
     local Items = StockPiler4.Items
@@ -150,6 +152,13 @@ function CP.ResolvePlantWatchTarget(watchPlantUid, watchSpec)
         local cultMax = CP.CultMaxNeedReq(ladder)
         if cultMax >= 1 then
             climbNeedReq = cultMax
+        end
+        -- Cult-usable destination is Cult floor. When the known ladder tops
+        -- below that (Livid@150 with Angry/Savage not yet discovered), keep
+        -- climbNeed at floor so Upgrade Seeds keeps SM-fishing.
+        local cultFloor = CP.FloorCultTier(CP.GetCultSkill())
+        if cultFloor > climbNeedReq then
+            climbNeedReq = cultFloor
         end
     end
     local seedUid = 0
@@ -384,10 +393,27 @@ end
 --- Buffer off: at least one Cult-max seed.
 --- Rung with plant but no known seed (Cross s0) is NOT done - keep climbing via
 --- lower plantable rungs / refine until a plantable seed exists and its buffer fills.
+--- Missing needReq rung on a known ladder (aspirational Cult-floor destination
+--- before Angry/Savage discovery) is NOT done - do not treat a lower-tier
+--- fallback seed buffer as arrival.
 local function CultMaxTierBufferFull(ladder, needReq, fallbackPlantUid, fallbackSeedUid)
     needReq = tonumber(needReq) or 0
     if needReq < 1 then
         return false
+    end
+    local hasLadder = type(ladder) == "table" and type(ladder.rungs) == "table" and #ladder.rungs > 0
+    local rungFound = false
+    if hasLadder then
+        for i = 1, #ladder.rungs do
+            if (tonumber(ladder.rungs[i].skillReq) or 0) == needReq then
+                rungFound = true
+                break
+            end
+        end
+        if not rungFound then
+            -- Family known but this Cult-floor tier is not on the ladder yet.
+            return false
+        end
     end
     local seedUid = RungUidsAtNeed(ladder, needReq, fallbackPlantUid, fallbackSeedUid)
     seedUid = tonumber(seedUid) or 0
@@ -601,12 +627,14 @@ function CP.DescribePlantWatchClimb(watchPlantUid)
     end
     out.eligible = out.stocked or out.midClimb
     if out.eligible and climbNeed > watchedReq then
-        -- Plant-watch climb arrives when Cult-max seed buffer is full.
+        -- Plant-watch climb arrives when Cult-max seed buffer is full
+        -- (known Cult-max rung, or aspirational Cult-floor while higher
+        -- rungs are still undiscovered).
         out.pending = HaveTargetRung(ladder, climbNeed, out.plantUid, out.seedUid, {
             requireBufferFull = true,
         }) ~= true
     elseif out.eligible and climbNeed <= watchedReq then
-        -- Nowhere above watched tier on the known ladder.
+        -- Watched tier is already at/above climb destination.
         out.pending = false
     end
     return out

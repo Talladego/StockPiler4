@@ -38,6 +38,17 @@ local function SeedSkillReq(item)
     return req
 end
 
+local function CanUseCraftingSample(sample)
+    local Inv = StockPiler4.Inventory
+    if type(sample) ~= "table" then
+        return false
+    end
+    if Inv and Inv.CanUseCraftingItem then
+        return Inv.CanUseCraftingItem(sample) == true
+    end
+    return true
+end
+
 function ASP.ApoTargetTier()
     return Gates().FloorApoTier(Gates().GetApoSkill())
 end

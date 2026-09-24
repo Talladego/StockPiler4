@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler4 = StockPiler4 or {}
-StockPiler4.Version = L"0.4.28"
+StockPiler4.Version = L"0.4.29"
 
 local function T(key, tokens)
     return StockPiler4.Util.T(key, tokens)
@@ -152,23 +152,35 @@ local function DumpAll()
 
     section("skillplan")
     if StockPiler4.CultSkillPlan and StockPiler4.CultSkillPlan.DumpSkillPlan then
-        StockPiler4.CultSkillPlan.DumpSkillPlan(emit)
+        local ok, err = pcall(StockPiler4.CultSkillPlan.DumpSkillPlan, emit)
+        if not ok then
+            emit("skillplan| ERROR: " .. tostring(err))
+        end
     else
         emit("skillplan| dump unavailable")
     end
 
     section("families")
     if StockPiler4.SeedMap and StockPiler4.SeedMap.DumpFamilies then
-        StockPiler4.SeedMap.DumpFamilies(emit)
+        local ok, err = pcall(StockPiler4.SeedMap.DumpFamilies, emit)
+        if not ok then
+            emit("families| ERROR: " .. tostring(err))
+        end
     else
         emit("families| dump unavailable")
     end
 
     section("upgradeplan")
     if StockPiler4.ClimbPlan and StockPiler4.ClimbPlan.Dump then
-        StockPiler4.ClimbPlan.Dump(emit)
+        local ok, err = pcall(StockPiler4.ClimbPlan.Dump, emit)
+        if not ok then
+            emit("upgradeplan| ERROR: " .. tostring(err))
+        end
     elseif StockPiler4.UpgradeSeed and StockPiler4.UpgradeSeed.Dump then
-        StockPiler4.UpgradeSeed.Dump(emit)
+        local ok, err = pcall(StockPiler4.UpgradeSeed.Dump, emit)
+        if not ok then
+            emit("upgradeplan| ERROR: " .. tostring(err))
+        end
     else
         emit("upgradeplan| dump unavailable")
     end
