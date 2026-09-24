@@ -12,8 +12,8 @@
 | Status | Count |
 | :--- | ---: |
 | Implemented | 17 |
-| Partial | 8 |
-| Missing | 1 |
+| Partial | 9 |
+| Missing | 0 |
 | **Total architectural targets** | **26** |
 
 ---
