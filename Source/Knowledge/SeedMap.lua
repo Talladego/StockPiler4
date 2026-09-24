@@ -621,7 +621,9 @@ function SM.GetSeedUidsForPlant(plantUid)
         for seedKey, bucket in pairs(grows) do
             if type(bucket) == "table" and type(bucket.products) == "table" then
                 local prod = bucket.products[tostring(plantUid)]
-                if type(prod) == "table" then
+                -- Crit tier-up harvest: plant skillReq > planted seed. Never treat
+                -- that lower seed as a primary plant→seed link.
+                if type(prod) == "table" and prod.critProduct ~= true then
                     addSeed(tonumber(seedKey) or tonumber(bucket.seedUid) or 0)
                 end
             end
@@ -1051,7 +1053,17 @@ function SM.ResolveSeedUidForPlant(plantUid, plantSpec)
         end
     end
 
-    if bestUid > 0 and bestScore >= 10000 then
+    -- Never return a seed whose skillReq is known and below the plant's.
+    -- Crit harvest plants refine to the lower planted seed; that must not win.
+    local function isKnownLower(uid)
+        if plantReq <= 0 then
+            return false
+        end
+        local sReq = seedSkillReq(uid)
+        return sReq > 0 and sReq < plantReq
+    end
+
+    if bestUid > 0 and bestScore >= 10000 and not isKnownLower(bestUid) then
         -- Exact name (100000+) or same skillReq (10000+). Reject genus-only guesses.
         return bestUid
     end
@@ -1059,13 +1071,16 @@ function SM.ResolveSeedUidForPlant(plantUid, plantSpec)
     -- verify name/skill). Without this, GrowReserve still falls back to
     -- GetSeedUidsForPlant[1] while CollectAutoGrowSeedLines leaves seedUid=0 —
     -- brew craftable=0 with no seed-buffer plant job (Rejuvenating/Fusk stall).
-    if refineSeed > 0 then
+    -- Skip when skill proves the candidate is a lower-tier crit feeder.
+    if refineSeed > 0 and not isKnownLower(refineSeed) then
         return refineSeed
     end
     if type(linked) == "table" then
-        local first = tonumber(linked[1]) or 0
-        if first > 0 then
-            return first
+        for i = 1, #linked do
+            local cand = tonumber(linked[i]) or 0
+            if cand > 0 and not isKnownLower(cand) then
+                return cand
+            end
         end
     end
     -- Do not fall back to PickBestSeedUid (prefers Eternal/L1 in bags).
@@ -1950,9 +1965,24 @@ function SM.ObserveRefineComplete(plantUid, seedUid, seedDelta)
     entry.refineAttempts = (tonumber(entry.refineAttempts) or 0) + 1
     local structural = false
     if seedUid > 0 and seedDelta > 0 then
-        if (tonumber(entry.seedUid) or 0) ~= seedUid then
-            entry.seedUid = seedUid
-            structural = true
+        -- Always record seedOut samples. Canonical entry.seedUid only when the
+        -- observed seed is not a known demotion below the plant's skillReq
+        -- (crit refine often returns the lower planted seed).
+        local curSeed = tonumber(entry.seedUid) or 0
+        if curSeed ~= seedUid then
+            local plantReq = ItemSkillReq(BagSample(plantUid) or {})
+            local newReq = ItemSkillReq(BagSample(seedUid) or {})
+            local curReq = curSeed > 0 and ItemSkillReq(BagSample(curSeed) or {}) or 0
+            local demote = plantReq > 0 and newReq > 0 and newReq < plantReq
+            local allow = not demote
+            if allow and curReq > 0 and newReq > 0 and newReq < curReq then
+                -- Do not replace a better-known seed with a lower one.
+                allow = false
+            end
+            if allow then
+                entry.seedUid = seedUid
+                structural = true
+            end
         end
         local so = entry.seedOut
         if type(so) ~= "table" then

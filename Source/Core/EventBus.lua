@@ -111,6 +111,10 @@ function Bus.Fire(eventName, payload)
         end
     end
     for i = 1, #handlers do
-        StockPiler4.Debug.TryCallQuiet("EventBus." .. eventName, handlers[i], payload)
+        if StockPiler4.Debug and StockPiler4.Debug.TryCallQuiet then
+            StockPiler4.Debug.TryCallQuiet("EventBus." .. eventName, handlers[i], payload)
+        else
+            handlers[i](payload)
+        end
     end
 end
