@@ -1,7 +1,7 @@
 # StockPiler4 Feature Coverage
 
 **Scope:** README.md intended features vs live addon at `Interface/AddOns/StockPiler4`  
-**Reviewed:** 2026-09-24 · Live version **0.4.20** (`StockPiler4.mod` / `Bootstrap.lua`) · README claims **0.4.18**  
+**Reviewed:** 2026-09-24 · Live version **0.4.20** (`StockPiler4.mod` / `Bootstrap.lua`) · README claims **0.4.20**  
 **Method:** README feature extraction → source/symbol evidence → status + gaps
 
 ---
@@ -35,7 +35,7 @@
 | **ClimbPlan** — plant-watch climb + shared cult seed economy | **Implemented** | `Source/Planner/ClimbPlan.lua`: climb pick/buy/refine (`PickPlantJob`, `SeedDeficit`, `CollectBuyJobs`, `AppendRefineIntents`, `CultMaxTierBufferFull`, watch status rows). Loaded in `.mod` before Planner. | — |
 | **UpgradeSeed** alias of ClimbPlan | **Implemented** | End of `ClimbPlan.lua`: `StockPiler4.UpgradeSeed = StockPiler4.ClimbPlan`. `UpgradeSeed.lua` is a deprecated shim **not** listed in `.mod` | Call sites still name `UpgradeSeed`; behavior is ClimbPlan. |
 | **PlantPlan** — plant candidate → `plantIntent` | **Implemented** | `PlantPlan.BuildPlantIntent`, `PickPlantJob`; `Planner` publishes `plan.plantIntent`; `Orchestrator.TryExecutePlant` → `Grow.ExecutePlant(intent)` only | — |
-| **PlanSnapshot** — immutable plan; executors do not patch rows | **Partial** | Store contract; executors consume intents without row edits; Watch target chips no longer mutate `plan.rows` (optimistic local only) | **Planner** still mutates the live snapshot: `PatchWatchRowsLiveCounts`, cheap/garden patch write `stale.plantIntent` / row fields. |
+| **PlanSnapshot** — immutable plan; executors do not patch rows | **Implemented** | Cheap/Garden/Reconcile clone-then-Replace; View chips optimistic-only; public patch enqueues rebuild only | — |
 | **Scheduler** — 50ms storm debounce | **Implemented** | `Scheduler.PLAN_DEBOUNCE_SEC = 0.05`; harvest storm / SkipPlan / SkipUi arm debounce (`Scheduler.lua`) | Longer quiet/storm floors coexist with 50ms coalesce — by design. |
 | **EventBus** UI refresh | **Implemented** | Domain fires `FOOTER_DIRTY` / `WATCH_UI_DIRTY`; `Ui.lua` subscribes and flushes | — |
 | Adapters ported from SP3 | **Implemented** | `.mod` loads adapters + `TradeSkillCaps` / `CraftChatAdapter` | — |
@@ -74,14 +74,14 @@
 
 | Item | Notes |
 | :--- | :--- |
-| README **Version 0.4.18** matches live `.mod` / `StockPiler4.Version` | Closed. |
+| README **Version 0.4.20** matches live `.mod` / `StockPiler4.Version` | Closed. |
 | Acceptance / refactor docs | `docs/ACCEPTANCE.md` and related docs expand product rules; this file stays README-primary. |
 
 ---
 
 ## Prioritized gap summary
 
-1. **PlanSnapshot immutability still partial** — View chip mutation removed; Planner cheap/garden / live-count patch still mutates the cached plan object. Prefer replace-whole-snapshot (or explicit overlay) if strict immutability remains a goal.
-2. **Minor comment/debt** — `Planner` still comments FrameWork warm-have; `UpgradeSeed` name remains in call sites (alias OK).
+1. **Minor comment/debt** — `Planner` may still mention FrameWork warm-have; `UpgradeSeed` name remains in call sites (alias OK).
+2. Architecture leftovers (not README feature gaps) — SkillUp remnant, lean Grow/Planner/TabWatch, RecipeSpec buffer shims, Scheduler flags — see `ARCHITECTURE_COVERAGE.md`.
 
-No README-named capability is entirely **missing**. Remaining feature gap is PlanSnapshot contract strictness (architecture debt shared with `ARCHITECTURE_COVERAGE.md`).
+No README-named capability is entirely **missing**. PlanSnapshot immutability is **Implemented** for cheap/garden/reconcile + View.
