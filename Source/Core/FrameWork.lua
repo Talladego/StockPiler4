@@ -80,9 +80,6 @@ local function ShouldSkipPump()
         if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
             return true
         end
-        if Sch._skipPlanThisFrame == true then
-            return true
-        end
     end
     local Orch = StockPiler4.Orchestrator
     if Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true then

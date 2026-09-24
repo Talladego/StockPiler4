@@ -126,9 +126,6 @@ local function ShouldDeferWatchFlush()
     if Sch and Sch.SkipUiThisFrameActive and Sch.SkipUiThisFrameActive() == true then
         return true
     end
-    if Sch and Sch._skipUiThisFrame == true then
-        return true
-    end
     local windowOpen = DoesWindowExist("StockPiler4Window")
         and WindowGetShowing("StockPiler4Window") == true
     if not windowOpen

@@ -2,7 +2,7 @@
 
 Clean-core Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.4.21** — Parallel-safe sibling of StockPiler3 with GenusLadder + ClimbPlan, immutable plan snapshots, and no FrameWork bag→plan path.
+**Version 0.4.22** — Parallel-safe sibling of StockPiler3 with GenusLadder + ClimbPlan, immutable plan snapshots, and no FrameWork bag→plan path.
 
 ## Quick start
 

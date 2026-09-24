@@ -38,10 +38,8 @@ Sch._pendingAfterSuppress = { bagFlush = false, bagQueue = false, plan = false }
 Sch._initialized = false
 Sch._harvestStormUntil = 0
 Sch._plantQuietUntil = 0
-Sch._skipPlanThisFrame = false
-Sch._skipUiThisFrame = false
-Sch._skipUiHoldFooter = false
-Sch._skipOrchThisFrame = false
+-- One-frame skip latch (plan / ui / orch). Cult storm + plant quiet stay separate.
+Sch._skipThisFrame = { plan = false, ui = false, uiHoldFooter = false, orch = false }
 Sch._busTokens = nil
 
 local function Now()
@@ -472,27 +470,37 @@ function Sch.ArmPlantQuiet(seconds)
     end
 end
 
+local function SkipFlags()
+    local skip = Sch._skipThisFrame
+    if type(skip) ~= "table" then
+        skip = { plan = false, ui = false, uiHoldFooter = false, orch = false }
+        Sch._skipThisFrame = skip
+    end
+    return skip
+end
+
 function Sch.SkipPlanThisFrame()
     ArmPipelineDebounce()
-    Sch._skipPlanThisFrame = true
+    SkipFlags().plan = true
 end
 
 function Sch.SkipUiThisFrame()
     ArmPipelineDebounce()
-    Sch._skipUiThisFrame = true
-    Sch._skipUiHoldFooter = true
+    local skip = SkipFlags()
+    skip.ui = true
+    skip.uiHoldFooter = true
 end
 
 function Sch.SkipOrchThisFrame()
-    Sch._skipOrchThisFrame = true
+    SkipFlags().orch = true
 end
 
 function Sch.SkipPlanThisFrameActive()
-    return Sch._skipPlanThisFrame == true
+    return SkipFlags().plan == true
 end
 
 function Sch.SkipUiThisFrameActive()
-    return Sch._skipUiThisFrame == true
+    return SkipFlags().ui == true
 end
 
 --- Hold Watch paint for a short window after reload / loading-end so FrameWork
@@ -540,11 +548,11 @@ function Sch.IsSessionSettling()
 end
 
 function Sch.SkipUiHoldFooter()
-    return Sch._skipUiHoldFooter == true
+    return SkipFlags().uiHoldFooter == true
 end
 
 function Sch.ClearSkipUiHoldFooter()
-    Sch._skipUiHoldFooter = false
+    SkipFlags().uiHoldFooter = false
 end
 
 function Sch.EnqueueBagFlush(needQueue)
@@ -744,9 +752,10 @@ function Sch.OnUpdate(timeElapsed)
     if not didHeavy and RebuildPlanIfDue() then
         didHeavy = true
     end
-    Sch._skipPlanThisFrame = false
+    local skip = SkipFlags()
+    skip.plan = false
     FlushWatchUiIfDue(didHeavy)
-    Sch._skipUiThisFrame = false
+    skip.ui = false
 
     Sch._autoAccum = (tonumber(Sch._autoAccum) or 0) + (tonumber(timeElapsed) or 0)
     local tickSec = AutoTickIntervalSec()
@@ -764,15 +773,15 @@ function Sch.OnUpdate(timeElapsed)
         if StockPiler4.Orchestrator and StockPiler4.Orchestrator.DecayFillBlocked then
             StockPiler4.Orchestrator.DecayFillBlocked()
         end
-        local skipOrch = Sch._skipOrchThisFrame == true
-        Sch._skipOrchThisFrame = false
+        local skipOrch = skip.orch == true
+        skip.orch = false
         if not didHeavy and not skipOrch
             and StockPiler4.Orchestrator and StockPiler4.Orchestrator.Tick
         then
             StockPiler4.Orchestrator.Tick()
         end
     else
-        Sch._skipOrchThisFrame = false
+        skip.orch = false
     end
 end
 
