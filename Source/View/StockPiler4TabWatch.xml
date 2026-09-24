@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <Scripts>
+        <Script file="Source/View/StockPiler4TabWatchTips.lua" />
         <Script file="Source/View/StockPiler4TabWatch.lua" />
     </Scripts>
     <Windows>

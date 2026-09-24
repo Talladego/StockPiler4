@@ -1,7 +1,7 @@
 # StockPiler4 Architecture Coverage
 
 **Scope:** Intended architecture from design docs vs live addon at `Interface/AddOns/StockPiler4`  
-**Reviewed:** 2026-09-24 · Live version **0.4.22** (`StockPiler4.mod`)  
+**Reviewed:** 2026-09-24 · Live version **0.4.23** (`StockPiler4.mod`)  
 **Sources of intent:** `REFACTORING_RECOMMENDATIONS.md`, `IMPLEMENTATION_PLAN.md`, `FRAME_SLICING.md`, `ACCEPTANCE.md`, `CODE_QUALITY_REVIEW.md`, `README.md`  
 **Not a target:** `FEATURE_COVERAGE.md`
 
@@ -11,8 +11,8 @@
 
 | Status | Count |
 | :--- | ---: |
-| Implemented | 20 |
-| Partial | 6 |
+| Implemented | 21 |
+| Partial | 5 |
 | Missing | 0 |
 | **Total architectural targets** | **26** |
 
@@ -33,9 +33,9 @@
 
 | Target | Status | Evidence | Gaps / mismatches |
 | :--- | :--- | :--- | :--- |
-| `GenusLadder` pure ladder API | **Partial** | Facade exists | Heavy merge still in SeedMap |
+| `GenusLadder` pure ladder API | **Partial** | Facade + family wrappers; Climb/Cult prefer GL | `BuildAllFamilyLadders` / `BestOwnedSeedOnLadder` body still in SeedMap (GrowsTable/BagSample locals) |
 | `ClimbPlan` shared climb economy | **Implemented** | Loaded; UpgradeSeed alias | — |
-| Delete & replace `SkillUp.lua` | **Implemented** | Split into **SkillUpGates**, **CultSkillPlan**, **ApoSkillPlan**, **SkillRates**, **WatchReserves**, **SkillUpWatchStatus**; callers retargeted; `SkillUp.lua` removed from `.mod`; `DumpSkillPlan` on CultSkillPlan; Sync re-exports removed | — |
+| Delete & replace `SkillUp.lua` | **Implemented** | Unloaded in 0.4.22 | — |
 | Caps floors canonical | **Implemented** | TradeSkillCaps | — |
 | Harvest crit / skillUpOrigin invariants | **Implemented** | SeedMap + BrewLearn | — |
 
@@ -49,7 +49,7 @@
 | Inventory static wipe + ByRole | **Implemented** | — | — |
 | Strict read-only PlanSnapshot | **Implemented** | Clone-then-Replace | — |
 | FrameWork bag→plan gone; 50ms debounce | **Implemented** | — | — |
-| Strip Scheduler suppression flags | **Partial** | `_pendingAfterSuppress` + `_skipThisFrame` tables; public Skip* APIs unchanged | Harvest storm / plant quiet remain (cult storm safety) |
+| Strip Scheduler suppression flags | **Partial** | `_pendingAfterSuppress` + `_skipThisFrame` | Storm/quiet remain (cult safety) |
 | Catalog-only time-slicing | **Partial** | Bag→plan gone | Generic FW remains |
 
 ---
@@ -60,9 +60,9 @@
 | :--- | :--- | :--- | :--- |
 | PlantPlan + plantIntent | **Implemented** | — | — |
 | Orch single TryExecutePlant | **Implemented** | — | — |
-| Grow lean ~500 lines | **Partial** | Execute* APIs exist | Still ~1.5k |
-| Remove RecipeSpec Planner shims | **Implemented** | Focus/`CollectAutoGrow*`/`WatchHasSeedBufferShort` shims removed; owners are Planner / DemandPlan | Residual RS planner fallbacks (BuildBalancedSpecDemand, WatchStillNeedsGrow, …) may remain |
-| Decompose Planner | **Partial** | Sub-planners + Cult/Apo Skill plans | Planner.lua still large |
+| Grow lean ~500 lines | **Partial** | `GrowDump.lua` extracted; Execute* APIs | Core still ~1.4k (harvest/plant locals tightly coupled) |
+| Remove RecipeSpec Planner shims | **Implemented** | Planner shims removed; `Watch.ShouldAutoGrowPotion`; demand/seed-lines via DemandPlan/Planner | — |
+| Decompose Planner | **Partial** | Sub-planners + Skill plans | Planner.lua still ~4.6k (focus/status paint) |
 
 ---
 
@@ -71,7 +71,7 @@
 | Target | Status | Evidence | Gaps / mismatches |
 | :--- | :--- | :--- | :--- |
 | Domain EventBus → View | **Implemented** | — | — |
-| Watch tab thin binder | **Partial** | Ephemeral rows in SkillUpWatchStatus; SkillUp gates via SkillUpGates | TabWatch still ~2.3k chrome |
+| Watch tab thin binder | **Partial** | `StockPiler4TabWatchTips.lua` (~750 tip builders); binder ~1.5k | Row paint / chrome still large |
 
 ---
 
@@ -79,7 +79,7 @@
 
 | Target | Status | Evidence | Gaps / mismatches |
 | :--- | :--- | :--- | :--- |
-| Unidirectional flow | **Partial** | EventBus + SkillUp unload | SeedMap ladder ownership; Grow queue probing |
+| Unidirectional flow | **Partial** | EventBus + SkillUp unload + RS shim removal | SeedMap still owns ladder build |
 | Public APIs vs private probing | **Partial** | Refine dirty APIs | Grow plant-queue internals |
 
 ---
@@ -88,17 +88,16 @@
 
 | Claim | Status | Evidence | Gaps / mismatches |
 | :--- | :--- | :--- | :--- |
-| Clean-core table as a set | **Partial** | SkillUp unloaded; PlanSnapshot/EventBus closed | GenusLadder ownership; lean modules |
+| Clean-core table as a set | **Partial** | SkillUp unloaded; RS planner shims gone; tips/dump extracts | SeedMap ladder build; Planner/Grow size |
 
 ---
 
 ## Prioritized gap summary
 
-1. ~~Retarget callers off `StockPiler4.SkillUp.*` / unload SkillUp File~~ — **Closed** (v0.4.22).
-2. **Grow / Planner / TabWatch lean-up** — still oversized vs design.
-3. ~~RecipeSpec focus shims~~ — **Closed** (owners Planner / DemandPlan).
-4. **Scheduler storm/quiet** — skip/pending tables consolidated; storm/quiet remain intentional.
-5. ~~SkillUp monolith body~~ — **Split + unloaded**.
-6. ~~PlanSnapshot / EventBus / Util~~ — Closed earlier.
+1. ~~SkillUp unload~~ — Closed 0.4.22.
+2. ~~RecipeSpec planner/focus shims~~ — Closed 0.4.23 (`Watch.ShouldAutoGrowPotion`; DemandPlan/Planner owners).
+3. **Grow / Planner lean** — Dump/tips extracted; core bodies still over design size (deferred: high local coupling).
+4. **GenusLadder ownership** — Call sites prefer GL; BuildAllFamilyLadders stays in SeedMap until BagSample/GrowsTable can move without behavior risk.
+5. **Scheduler storm/quiet** — Intentional; skip/pending tables consolidated.
 
-**Bottom line:** SkillUp File unloaded (v0.4.22); callers use owning modules; RS focus shims removed; Scheduler skip latches tabled. Grow/Planner/TabWatch lean and GenusLadder ownership still open.
+**Bottom line:** Live **0.4.23** is coherent for `/reload` soak. Remaining gaps are size/ownership of SeedMap ladder build and Grow/Planner cores — deferred with rationale above.

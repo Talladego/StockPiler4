@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ModuleFile xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <UiMod name="StockPiler4" version="0.4.22" date="2026-09-24">
+    <UiMod name="StockPiler4" version="0.4.23" date="2026-09-24">
         <Author name="Talladego" email="" />
         <Description text="StockPiler4 - clean-core cult/apo stock automation. Parallel-safe with StockPiler3." />
         <VersionSettings gameVersion="1.4.8" windowsVersion="1.0" savedVariablesVersion="1.0" />
@@ -54,6 +54,7 @@
             <File name="Source/Stores/RefinePipelineStore.lua" />
             <File name="Source/Stores/PlanSnapshotStore.lua" />
             <File name="Source/Grow.lua" />
+            <File name="Source/GrowDump.lua" />
             <File name="Source/Planner/PlantPlan.lua" />
             <File name="Source/Planner/ClimbPlan.lua" />
             <File name="Source/Planner/DemandPlan.lua" />
