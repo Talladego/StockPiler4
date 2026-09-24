@@ -49,6 +49,40 @@ local function CanUseCraftingSample(sample)
     return true
 end
 
+local function LooksNonMainSeed(item, plantSpec)
+    local role = tostring(plantSpec and plantSpec.role or "")
+    if role == "stabilizer" or role == "extender" or role == "multiplier"
+        or role == "stimulant" or role == "goldweed" or role == "container"
+    then
+        return true
+    end
+    local SM = StockPiler4.SeedMap
+    if SM and SM.SpecHasGoldweedMultiplier and type(plantSpec) == "table"
+        and SM.SpecHasGoldweedMultiplier(plantSpec) == true
+    then
+        return true
+    end
+    if SM and SM.IsHarvestByproduct and type(plantSpec) == "table"
+        and SM.IsHarvestByproduct(plantSpec) == true
+    then
+        return true
+    end
+    local n = ""
+    if type(item) == "table" and item.name ~= nil then
+        if type(item.name) == "wstring" and type(WStringToString) == "function" then
+            n = string.lower(WStringToString(item.name) or "")
+        else
+            n = string.lower(tostring(item.name or ""))
+        end
+    end
+    if string.find(n, "goldweed", 1, true) or string.find(n, "gobswort", 1, true)
+        or string.find(n, "resin", 1, true)
+    then
+        return true
+    end
+    return false
+end
+
 function ASP.ApoTargetTier()
     return Gates().FloorApoTier(Gates().GetApoSkill())
 end

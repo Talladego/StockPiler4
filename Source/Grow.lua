@@ -1071,9 +1071,11 @@ function Grow.CanHarvestNow()
         Grow._canHarvestCacheKey = nil
         return false
     end
+    -- Key on GetGen (stage-aware), not GetPlanGen. Growing→GROWN is a soft
+    -- stage pulse: planGen stays put while gardenGen bumps, so a planGen-keyed
+    -- cache stayed false with 4 ready plots (0.4.28 soak).
     local Garden = StockPiler4.Garden
-    local gardenGen = Garden and (Garden.GetPlanGen and Garden.GetPlanGen()
-        or Garden.GetGen and Garden.GetGen()) or 0
+    local gardenGen = Garden and Garden.GetGen and Garden.GetGen() or 0
     local key = tostring(gardenGen)
     if Grow._canHarvestCacheKey == key and Grow._canHarvestCached ~= nil then
         return Grow._canHarvestCached == true
