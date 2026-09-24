@@ -891,6 +891,43 @@ function Catalog.ListPlantEntries()
         end
     end
 
+    -- Bag-only plants (Special Moment tier-ups before/without grow-link learn).
+    -- Only genus ladders that already have a seed rung (cultivation), not apo mats.
+    if Inv and Inv.ForEachItem and SM and SM.ItemLooksLikeRefinablePlant then
+        Inv.ForEachItem(function(item)
+            if type(item) ~= "table" then
+                return
+            end
+            if SM.IsBagSeedOrSpore and SM.IsBagSeedOrSpore(item) == true then
+                return
+            end
+            if SM.ItemLooksLikeRefinablePlant(item) ~= true then
+                return
+            end
+            local uid = tonumber(item.uniqueID) or 0
+            if uid <= 0 or seen[uid] == true then
+                return
+            end
+            local genus = SM.GenusKeyFromName and SM.GenusKeyFromName(item.name) or ""
+            if genus == "" then
+                return
+            end
+            local ladder = SM.GetGenusLadder and SM.GetGenusLadder(genus) or nil
+            local hasSeed = false
+            if type(ladder) == "table" and type(ladder.rungs) == "table" then
+                for ri = 1, #ladder.rungs do
+                    if (tonumber(ladder.rungs[ri].seedUid) or 0) > 0 then
+                        hasSeed = true
+                        break
+                    end
+                end
+            end
+            if hasSeed then
+                AddPlant(uid)
+            end
+        end)
+    end
+
     table.sort(out, function(a, b)
         local na = string.lower(ToNarrow(a.name))
         local nb = string.lower(ToNarrow(b.name))

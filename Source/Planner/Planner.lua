@@ -192,6 +192,10 @@ local function SettingsHash()
             hash = hash + 19
         end
     end
+    local US = StockPiler4.UpgradeSeed or StockPiler4.ClimbPlan
+    if US and US.IsEnabled and US.IsEnabled() == true then
+        hash = hash + 23
+    end
     return hash
 end
 
@@ -1709,6 +1713,34 @@ local function PlantWatchesAwaitPotions(rows)
     return Watch.AllEnabledPotionWatchesStocked() ~= true
 end
 
+--- Seed-buffer short for plant watches (used by Reconcile + ApplyPlantWatchStatus).
+--- Must be defined above ReconcileAutoGrowStatus (local visibility).
+local function PlantSeedBufferShort(seedUid, plantUid, spec)
+    local Watch = StockPiler4.Watch
+    if not (Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true) then
+        return false
+    end
+    seedUid = tonumber(seedUid) or 0
+    if seedUid <= 0 then
+        return false
+    end
+    local buffer = Watch.GetSeedBufferMin and tonumber(Watch.GetSeedBufferMin()) or 5
+    local Refine = StockPiler4.Refine
+    if Refine and Refine.GetSeedBudget then
+        local b = Refine.GetSeedBudget(seedUid)
+        if type(b) == "table" then
+            local credit = tonumber(b.credit)
+            if credit == nil then
+                credit = tonumber(b.live) or 0
+            end
+            return credit < buffer
+        end
+    end
+    local Inv = StockPiler4.Inventory
+    local have = Inv and Inv.CountByUid and tonumber(Inv.CountByUid(seedUid)) or 0
+    return have < buffer
+end
+
 local function ReconcileAutoGrowStatus(row)
     if type(row) ~= "table" then
         return false
@@ -2887,32 +2919,6 @@ local function FillWatchRowTips(row, demand)
     StampRowSeedBufferUids(row)
 end
 
-local function PlantSeedBufferShort(seedUid, plantUid, spec)
-    local Watch = StockPiler4.Watch
-    if not (Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true) then
-        return false
-    end
-    seedUid = tonumber(seedUid) or 0
-    if seedUid <= 0 then
-        return false
-    end
-    local buffer = Watch.GetSeedBufferMin and tonumber(Watch.GetSeedBufferMin()) or 5
-    local Refine = StockPiler4.Refine
-    if Refine and Refine.GetSeedBudget then
-        local b = Refine.GetSeedBudget(seedUid)
-        if type(b) == "table" then
-            local credit = tonumber(b.credit)
-            if credit == nil then
-                credit = tonumber(b.live) or 0
-            end
-            return credit < buffer
-        end
-    end
-    local Inv = StockPiler4.Inventory
-    local have = Inv and Inv.CountByUid and tonumber(Inv.CountByUid(seedUid)) or 0
-    return have < buffer
-end
-
 local function ApplyPlantWatchStatus(row, potionRows)
     if type(row) ~= "table" then
         return
@@ -3211,12 +3217,26 @@ local function PatchPlanSnapshotLiveStatus(row)
     end
     local keyStr = tostring(row.potionRecipeKey or row.id or row.potionKey or "")
     local uid = tonumber(row.uniqueID) or 0
+    local rowUpgrade = row.upgradeWatch == true
+    local rowSkillUp = row.skillUp == true
+    local rowPlant = row.isPlantWatch == true or row.kind == "plant"
     for i = 1, #plan.rows do
         local snap = plan.rows[i]
         if type(snap) == "table" then
             local snapKey = tostring(snap.potionRecipeKey or snap.id or snap.potionKey or "")
             local snapUid = tonumber(snap.uniqueID) or 0
-            if (keyStr ~= "" and snapKey == keyStr) or (uid > 0 and snapUid == uid) then
+            local keyHit = keyStr ~= "" and snapKey == keyStr
+            local uidHit = uid > 0 and snapUid == uid
+            if uidHit and not keyHit then
+                -- uniqueID alone: same row kind only (upgrade/skillup/plant collision).
+                local snapUpgrade = snap.upgradeWatch == true
+                local snapSkillUp = snap.skillUp == true
+                local snapPlant = snap.isPlantWatch == true or snap.kind == "plant"
+                if rowUpgrade ~= snapUpgrade or rowSkillUp ~= snapSkillUp or rowPlant ~= snapPlant then
+                    uidHit = false
+                end
+            end
+            if keyHit or uidHit then
                 snap.potionHave = row.potionHave
                 snap.potionDeficit = row.potionDeficit
                 snap.craftable = row.craftable
@@ -3268,8 +3288,10 @@ local function RefreshSkillUpWatchRows(rows, opts)
         end
     end
     local dirty = false
+    local write = 0
     for i = 1, #rows do
         local row = rows[i]
+        local keep = true
         if type(row) == "table" and (row.skillUp == true or row.addonOwned == true
             or row.upgradeWatch == true)
         then
@@ -3311,27 +3333,22 @@ local function RefreshSkillUpWatchRows(rows, opts)
                     end
                 end
             elseif row.skillUp == true then
-                -- Apo/Cult SkillUp no longer emitted (e.g. skill hit 200): disarm Ready
-                -- so bag flush cannot re-load a stale board.
-                if (tonumber(row.craftable) or 0) > 0
-                    or type(row.recipe) == "table"
-                    or tostring(row.statusKey or "") == "ready_to_craft"
-                then
-                    row.craftable = 0
-                    row.craftableSafe = false
-                    row.craftableText = L""
-                    row.recipe = nil
-                    row.potionDeficit = 0
-                    row.hideBrew = true
-                    row.statusKey = "skill_done"
-                    row.statusText = T("skillup.watch.done")
-                    dirty = true
-                    if opts.syncSnapshot ~= false then
-                        PatchPlanSnapshotLiveStatus(row)
-                    end
-                end
+                -- Toggle off / builder stopped emitting: drop ephemeral SkillUp row.
+                -- Leaving it painted "skill_done" (or last waiting status) kept Cult/Apo
+                -- rows visible after Level up skills was unchecked.
+                keep = false
+                dirty = true
             end
         end
+        if keep then
+            write = write + 1
+            if write ~= i then
+                rows[write] = row
+            end
+        end
+    end
+    for i = #rows, write + 1, -1 do
+        rows[i] = nil
     end
     return dirty
 end
@@ -4197,18 +4214,11 @@ function Planner.HasReadyToCraft()
     return HasReadyToCraftFromPlan()
 end
 
---- Closed-window: enqueue plan rebuild for live status (no in-place row mutation).
---- Returns false; craft-ready deltas arrive after rebuild.
+--- Closed-window Ready wake: brew/grow notifies only.
+--- Do not EnqueuePlanRebuild here — after every Build, Scheduler marks Watch dirty
+--- and closed FlushWatchUiIfDirty keeps dirty for next open paint, so rebuilding
+--- here re-armed a full Planner.Build every PLAN_MIN_GAP (~2s) while idle.
 function Planner.SyncLiveStatusClosedWindow()
-    local PS = StockPiler4.PlanSnapshot
-    local plan = PS and PS.Get and PS.Get()
-    if type(plan) ~= "table" or type(plan.rows) ~= "table" or #plan.rows == 0 then
-        return false
-    end
-    local Sch = StockPiler4.Scheduler
-    if Sch and Sch.EnqueuePlanRebuild then
-        Sch.EnqueuePlanRebuild({ nudge = true })
-    end
     local Brew = StockPiler4.Brew
     if Brew and Brew.InvalidateCanBrewCache then
         Brew.InvalidateCanBrewCache()

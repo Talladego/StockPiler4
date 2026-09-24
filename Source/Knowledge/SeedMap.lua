@@ -104,6 +104,9 @@ local function NormalizeGrowName(nameNarrow)
     s = string.gsub(s, "%s+dust$", "")
     s = string.gsub(s, "%s+oil$", "")
     s = string.gsub(s, "%s+pulp$", "")
+    -- RoR spelling split: plant "Marsh Root" vs seed "Marshroot" must share a genus
+    -- token or Special Moment L75 (Gruff Marsh Root) is rejected vs Cross Marshroot Seed.
+    s = string.gsub(s, "marsh%s+root", "marshroot")
     s = string.gsub(s, "%s+", " ")
     s = string.gsub(s, "^%s+", "")
     s = string.gsub(s, "%s+$", "")
@@ -390,6 +393,21 @@ function SM.ResolveSeedBonusValue(seedUid, bonusRef)
     return 0
 end
 
+local function CraftingBonusSkillReq(item)
+    if type(item) ~= "table" or type(item.craftingBonus) ~= "table" then
+        return 0
+    end
+    for _, bonus in pairs(item.craftingBonus) do
+        if type(bonus) == "table" then
+            local ref = tonumber(bonus.bonusReference) or 0
+            if ref == 9 then
+                return tonumber(bonus.bonusValue) or 0
+            end
+        end
+    end
+    return 0
+end
+
 local function ItemSkillReq(item)
     if type(item) ~= "table" then
         return 0
@@ -399,11 +417,23 @@ local function ItemSkillReq(item)
         req = tonumber(item.bonuses[9]) or 0
     end
     if req <= 0 then
+        req = CraftingBonusSkillReq(item)
+    end
+    if req <= 0 then
         local Items = StockPiler4.Items
         local uid = tonumber(item.uniqueID) or tonumber(item.uid) or 0
         if uid > 0 and Items and Items.ToSpec then
             local spec = Items.ToSpec(uid)
             req = tonumber(spec and spec.skillLevel) or 0
+        end
+        if req <= 0 and uid > 0 and Items and Items.GetByUid then
+            local row = Items.GetByUid(uid)
+            if type(row) == "table" then
+                req = tonumber(row.skillReq) or tonumber(row.skillLevel) or 0
+                if req <= 0 and type(row.bonuses) == "table" then
+                    req = tonumber(row.bonuses[9]) or 0
+                end
+            end
         end
     end
     return req
@@ -2288,9 +2318,7 @@ function SM.GenusKeyFromName(name)
     if n == "" then
         return ""
     end
-    -- RoR spelling split: plant "Marsh Root" vs seed "Marshroot" must share a genus
-    -- or Fretting seeds sit on marshroot|unknown while climb uses root|* with s0.
-    n = string.gsub(n, "marsh%s+root", "marshroot")
+    -- marsh root → marshroot already applied in NormalizeGrowName.
     return string.match(n, "([^%s]+)$") or n
 end
 
@@ -2522,11 +2550,18 @@ end
 
 --- Build all known family ladders from grows/refines/bags/account/vendor.
 --- Returns map familyKey -> { key, genus, role, effectId, rungs[] }.
---- Cached by Knowledge gen so dumps / climb ticks do not rebuild every frame.
+--- Cached by Knowledge gen + inventory snap so bag-only crit plants appear.
 function SM.BuildAllFamilyLadders()
     local Know = StockPiler4.Knowledge
     local gen = Know and Know.GetGen and Know.GetGen() or 0
-    if type(SM._familyLadderCache) == "table" and SM._familyLadderCacheGen == gen then
+    local Inv = StockPiler4.Inventory
+    local snapGen = Inv and Inv.GetSnapGen and Inv.GetSnapGen() or 0
+    -- Cache must track bag snap: Special Moment plants land in bags before (or without)
+    -- a grow-product Touch, and climb/Plants tab need the new rung immediately.
+    if type(SM._familyLadderCache) == "table"
+        and SM._familyLadderCacheGen == gen
+        and SM._familyLadderCacheSnap == snapGen
+    then
         return SM._familyLadderCache
     end
     local families = {}
@@ -2643,7 +2678,6 @@ function SM.BuildAllFamilyLadders()
         end
     end
 
-    local Inv = StockPiler4.Inventory
     if Inv and Inv.ForEachItem then
         Inv.ForEachItem(considerItem)
     end
@@ -2653,7 +2687,17 @@ function SM.BuildAllFamilyLadders()
         for key, row in pairs(items) do
             if type(row) == "table" then
                 if row.uniqueID == nil and tonumber(key) then
-                    row = { uniqueID = tonumber(key), name = row.name, craftingSkillRequirement = row.craftingSkillRequirement }
+                    row = {
+                        uniqueID = tonumber(key),
+                        name = row.name,
+                        craftingSkillRequirement = row.craftingSkillRequirement
+                            or row.skillReq or row.skillLevel,
+                        skillReq = row.skillReq or row.skillLevel,
+                        bonuses = row.bonuses,
+                        craftingBonus = row.craftingBonus,
+                        isRefinable = row.isRefinable,
+                        cultivationType = row.cultivationType,
+                    }
                 end
                 considerItem(row)
             end
@@ -2677,12 +2721,14 @@ function SM.BuildAllFamilyLadders()
     HealFamilyRungSeeds(families)
     SM._familyLadderCache = families
     SM._familyLadderCacheGen = gen
+    SM._familyLadderCacheSnap = snapGen
     return families
 end
 
 function SM.InvalidateFamilyLadderCache()
     SM._familyLadderCache = nil
     SM._familyLadderCacheGen = nil
+    SM._familyLadderCacheSnap = nil
 end
 
 function SM.GetFamilyLadder(familyKey)

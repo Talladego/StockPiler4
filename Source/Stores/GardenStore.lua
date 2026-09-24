@@ -71,7 +71,7 @@ local function ApplyPlotRow(plotNum, row)
     return anyChange, planChange
 end
 
-local function FireGardenChanged(gardenGen, plotNum, soft)
+local function FireGardenChanged(gardenGen, plotNum, soft, planChanged)
     gardenGen = tonumber(gardenGen) or 0
     if gardenGen <= 0 then
         return
@@ -93,6 +93,7 @@ local function FireGardenChanged(gardenGen, plotNum, soft)
             gardenGen = gardenGen,
             plotNum = plotNum,
             soft = soft == true,
+            planChanged = planChanged == true,
             planGen = Garden.GetPlanGen(),
         })
     end
@@ -170,7 +171,7 @@ function Garden.SyncAll()
                 Garden._planGen = (tonumber(Garden._planGen) or 0) + 1
             end
             -- Soft dirty: stage-only pulse still bumps gardenGen but planGen may stay.
-            FireGardenChanged(Garden._gen, 0, planChanged ~= true)
+            FireGardenChanged(Garden._gen, 0, planChanged ~= true, planChanged)
         end
     end)
     Garden._syncDepth = math.max(0, (tonumber(Garden._syncDepth) or 1) - 1)
@@ -205,7 +206,7 @@ function Garden.SyncPlot(plotNum)
             Garden._planGen = planGenBefore + 1
         end
         if (tonumber(Garden._gen) or 0) > genBefore then
-            FireGardenChanged(Garden._gen, plotNum, planChange ~= true)
+            FireGardenChanged(Garden._gen, plotNum, planChange ~= true, planChange == true)
         end
     end)
     Garden._syncDepth = math.max(0, (tonumber(Garden._syncDepth) or 1) - 1)
@@ -240,5 +241,5 @@ end
 
 function Garden.MarkSoftDirty(plotNum)
     Garden._gen = (tonumber(Garden._gen) or 0) + 1
-    FireGardenChanged(Garden._gen, tonumber(plotNum) or 0, true)
+    FireGardenChanged(Garden._gen, tonumber(plotNum) or 0, true, false)
 end

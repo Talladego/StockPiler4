@@ -319,7 +319,13 @@ local function OnGardenDirty(payload)
             return
         end
         Sch.WakeAutoGrow()
-        Sch.EnqueuePlanRebuild()
+        -- Only rebuild when plot contents changed for planning (seed plant/harvest).
+        -- Empty-plot wake alone looped full Builds every PLAN_MIN_GAP with Upgrade on.
+        if type(payload) == "table" and payload.planChanged == true then
+            Sch.EnqueuePlanRebuild()
+        else
+            Sch.MarkWatchUiDirty()
+        end
     else
         Sch.MarkWatchUiDirty()
     end

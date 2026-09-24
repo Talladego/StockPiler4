@@ -103,7 +103,18 @@ function PS.GetOrBuild(refresh)
         return PS._plan
     end
 
+    -- Cache hit: skip Build (Scheduler GetOrBuild(true) used to full-Build every
+    -- PLAN_MIN_GAP even when gens were unchanged — Upgrade Seeds + empty plots).
     local Planner = StockPiler4.Planner
+    if opts.force ~= true and type(PS._plan) == "table" and PS._cacheKey ~= nil
+        and Planner and Planner.CacheKeyFromGens
+    then
+        local key = Planner.CacheKeyFromGens()
+        if key ~= nil and key == PS._cacheKey then
+            return PS._plan
+        end
+    end
+
     if Planner and type(Planner.Build) == "function" then
         local plan = Planner.Build(opts)
         if type(plan) == "table" then

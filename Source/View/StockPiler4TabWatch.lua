@@ -503,17 +503,22 @@ local function BuildVisibleList(opts)
     local forcePlan = opts.forcePlan == true
     local hasContent = HasEnabledWatch() or HasSkillUpWatchStatus()
     -- Never sync-force Planner.Build from Watch paint (SP2 Flatten). Empty/stale
-    -- plan: keep previous rows and enqueue a coalesced rebuild.
+    -- plan: keep previous rows; coalesce rebuild only when not already pending.
     local Sch = StockPiler4.Scheduler
+    local planPending = Sch and Sch.IsPlanRebuildPending and Sch.IsPlanRebuildPending() == true
     local holdBuild = (Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true)
         or (Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
-        or (Sch and Sch.IsPlanRebuildPending and Sch.IsPlanRebuildPending() == true)
+        or planPending
     local snap = StockPiler4.PlanSnapshot and StockPiler4.PlanSnapshot.Get
         and StockPiler4.PlanSnapshot.Get()
     local snapRows = type(snap) == "table" and snap.rows or nil
     local snapEmpty = type(snapRows) ~= "table" or #snapRows == 0
-    if hasContent and (forcePlan or snapEmpty) and Sch and Sch.EnqueuePlanRebuild then
-        Sch.EnqueuePlanRebuild({ nudge = holdBuild or not forcePlan })
+    -- Do not re-arm PlanRebuild on every paint while pending (empty-plan + Upgrade
+    -- Seeds crash used to loop full Builds every PLAN_MIN_GAP).
+    if hasContent and forcePlan and not planPending and Sch and Sch.EnqueuePlanRebuild then
+        Sch.EnqueuePlanRebuild({ nudge = holdBuild })
+    elseif hasContent and snapEmpty and not planPending and Sch and Sch.EnqueuePlanRebuild then
+        Sch.EnqueuePlanRebuild({ nudge = true })
     end
     if StockPiler4.Planner and StockPiler4.Planner.GetOrBuild then
         plan = StockPiler4.Planner.GetOrBuild({ refresh = false })
@@ -529,7 +534,8 @@ local function BuildVisibleList(opts)
                 keep = true
             end
             if keep then
-                if Sch and Sch.EnqueuePlanRebuild then
+                -- Keep previous paint; nudge only if nothing is already queued.
+                if not planPending and Sch and Sch.EnqueuePlanRebuild then
                     Sch.EnqueuePlanRebuild({ nudge = true })
                 end
                 -- Prefer current snapshot rows when they exist (avoid orphaned stale listData).

@@ -357,6 +357,58 @@ local function TargetPlantableCount(t)
     return plantable, owned, climbCap
 end
 
+--- Seed/plant uids on the needReq rung (Cult-max destination).
+--- When the rung exists, return its uids only (seedUid may be 0 for orphan
+--- high plants). Fallbacks apply only when no rung exists at needReq — otherwise
+--- watched L1 seed buffer falsely ends climb at Cross L50 s0.
+--- Must sit above TargetUpgradePlant (Lua local visibility).
+local function RungUidsAtNeed(ladder, needReq, fallbackPlantUid, fallbackSeedUid)
+    needReq = tonumber(needReq) or 0
+    local seedUid = 0
+    local plantUid = 0
+    local found = false
+    if type(ladder) == "table" and type(ladder.rungs) == "table" and needReq >= 1 then
+        for i = 1, #ladder.rungs do
+            local rung = ladder.rungs[i]
+            if (tonumber(rung.skillReq) or 0) == needReq then
+                found = true
+                seedUid = tonumber(rung.seedUid) or 0
+                plantUid = tonumber(rung.plantUid) or 0
+                break
+            end
+        end
+    end
+    if not found then
+        seedUid = tonumber(fallbackSeedUid) or 0
+        plantUid = tonumber(fallbackPlantUid) or 0
+    end
+    return seedUid, plantUid
+end
+
+--- Plant-watch climb done: Cult-max tier seed buffer is full (credit >= buffer).
+--- Buffer off: at least one Cult-max seed.
+--- Rung with plant but no known seed (Cross s0) is NOT done - keep climbing via
+--- lower plantable rungs / refine until a plantable seed exists and its buffer fills.
+local function CultMaxTierBufferFull(ladder, needReq, fallbackPlantUid, fallbackSeedUid)
+    needReq = tonumber(needReq) or 0
+    if needReq < 1 then
+        return false
+    end
+    local seedUid = RungUidsAtNeed(ladder, needReq, fallbackPlantUid, fallbackSeedUid)
+    seedUid = tonumber(seedUid) or 0
+    if seedUid <= 0 then
+        -- Orphan high plant must not end the climb (Fretting→Cross with s0).
+        return false
+    end
+    local budget = CP.GetSeedBudget(seedUid)
+    local credit = tonumber(budget.credit) or 0
+    local buffer = tonumber(budget.bufferMin) or 0
+    if buffer < 1 then
+        return credit >= 1
+    end
+    return credit >= buffer
+end
+
 --- Refine scan for one target (plants above owned seed rung).
 --- Plant-watch buffer fill: also refine Cult-max plants while that seed buffer is short.
 local function TargetUpgradePlant(t)
@@ -389,54 +441,6 @@ local function TargetUpgradePlant(t)
         ownedSeedReq = scanOwnedReq,
     })
     return up, ownedReq
-end
-
---- Seed/plant uids on the needReq rung (Cult-max destination).
-local function RungUidsAtNeed(ladder, needReq, fallbackPlantUid, fallbackSeedUid)
-    needReq = tonumber(needReq) or 0
-    local seedUid = tonumber(fallbackSeedUid) or 0
-    local plantUid = tonumber(fallbackPlantUid) or 0
-    if type(ladder) == "table" and type(ladder.rungs) == "table" and needReq >= 1 then
-        for i = 1, #ladder.rungs do
-            local rung = ladder.rungs[i]
-            if (tonumber(rung.skillReq) or 0) == needReq then
-                local rSeed = tonumber(rung.seedUid) or 0
-                local rPlant = tonumber(rung.plantUid) or 0
-                if rSeed > 0 then
-                    seedUid = rSeed
-                end
-                if rPlant > 0 then
-                    plantUid = rPlant
-                end
-                break
-            end
-        end
-    end
-    return seedUid, plantUid
-end
-
---- Plant-watch climb done: Cult-max tier seed buffer is full (credit >= buffer).
---- Buffer off: at least one Cult-max seed.
---- Rung with plant but no known seed (Cross s0) is NOT done - keep climbing via
---- lower plantable rungs / refine until a plantable seed exists and its buffer fills.
-local function CultMaxTierBufferFull(ladder, needReq, fallbackPlantUid, fallbackSeedUid)
-    needReq = tonumber(needReq) or 0
-    if needReq < 1 then
-        return false
-    end
-    local seedUid = RungUidsAtNeed(ladder, needReq, fallbackPlantUid, fallbackSeedUid)
-    seedUid = tonumber(seedUid) or 0
-    if seedUid <= 0 then
-        -- Orphan high plant must not end the climb (Fretting→Cross with s0).
-        return false
-    end
-    local budget = CP.GetSeedBudget(seedUid)
-    local credit = tonumber(budget.credit) or 0
-    local buffer = tonumber(budget.bufferMin) or 0
-    if buffer < 1 then
-        return credit >= 1
-    end
-    return credit >= buffer
 end
 
 --- Have the target-tier seed/plant for this climb need?
@@ -1030,13 +1034,11 @@ function CP.ShouldHoldEmptyPlots(climb)
         return false
     end
     local why = tostring(type(climb) == "table" and climb.why or "")
-    if why == "refining" then
-        -- Refine armed and PickPlantJob found no plantable elsewhere.
-        return true
-    end
-    if why ~= "climbing" and why ~= "need_buy" and why ~= "no_family" then
+    if why ~= "refining" and why ~= "climbing" and why ~= "need_buy" and why ~= "no_family" then
         return false
     end
+    -- Even while refining (e.g. orphan Cross in bag), do not hold if any climb
+    -- target still has plantable seeds (Fretting) — otherwise empty plots idle.
     local targets = GetUpgradeTargets()
     for i = 1, #targets do
         local t = targets[i]
@@ -1044,9 +1046,11 @@ function CP.ShouldHoldEmptyPlots(climb)
         if (tonumber(plantable) or 0) >= 1 then
             return false
         end
-        local up = TargetUpgradePlant(t)
-        if type(up) == "table" and (tonumber(up.plantUid) or 0) > 0 then
-            return false
+        if why ~= "refining" then
+            local up = TargetUpgradePlant(t)
+            if type(up) == "table" and (tonumber(up.plantUid) or 0) > 0 then
+                return false
+            end
         end
     end
     return true
@@ -1098,9 +1102,8 @@ function CP.PickPlantJob()
             local upgradePlantReq = 0
             if type(up) == "table" and (tonumber(up.plantUid) or 0) > 0 then
                 upgradePlantReq = tonumber(up.skillReq) or 0
-                if StockPiler4.Refine and StockPiler4.Refine.MarkRefineDue then
-                    StockPiler4.Refine.MarkRefineDue("upgrade-seed")
-                end
+                -- Do not MarkRefineDue here: dirty+empty plots re-armed PlanRebuild every
+                -- gap while Fretting was still plantable. Refine arms only on refine-only paths.
                 refineActive = refineActive or {
                     familyKey = t.ladder.key,
                     haveReq = ownedReq,
@@ -1128,7 +1131,9 @@ function CP.PickPlantJob()
                 end
                 local intermediate = IsIntermediateClimb(t.ladder, ownedReq)
                 -- Do not plant a lower rung while higher-tier plants sit in bag
-                -- (L1 Fusk 3010030 filled all plots while Cloudy Fusk waited to refine).
+                -- (L1 Fusk filled plots while Cloudy Fusk waited to refine).
+                -- Special Moment plant-only rungs (Gruff L75 s0) must also block
+                -- planting Cross L50 — refine first, even before the seed is known.
                 local plantGoesBackward = upgradePlantReq > ownedReq
                 local plotCredit = 0
                 local Grow = StockPiler4.Grow
@@ -1591,8 +1596,9 @@ function CP.GetActiveStatus()
     return CP._active
 end
 
---- Best owned seed/plant skillReq on a ladder at or below climbCap.
---- Counts bag and in-ground seeds (plot credit) so status matches seed-buffer plant.
+--- Best owned seed skillReq on a ladder at or below climbCap.
+--- Seeds (bag / in-ground) only — orphan plants with no known seed (Cross L50 s0)
+--- must not count as haveReq or UI paints "Upgrading 50->50" while still climbing.
 local function BestOwnedReqOnLadder(ladder, climbCap)
     climbCap = tonumber(climbCap) or 0
     if type(ladder) ~= "table" or type(ladder.rungs) ~= "table" or climbCap < 1 then
@@ -1609,25 +1615,20 @@ local function BestOwnedReqOnLadder(ladder, climbCap)
         local req = tonumber(rung.skillReq) or 0
         if req >= 1 and req <= climbCap then
             local seedUid = tonumber(rung.seedUid) or 0
-            local plantUid = tonumber(rung.plantUid) or 0
-            local have = false
-            if seedUid > 0 and (tonumber(Inv.CountByUid(seedUid)) or 0) >= 1 then
-                have = true
-            elseif plantUid > 0 and (tonumber(Inv.CountByUid(plantUid)) or 0) >= 1 then
-                have = true
-            elseif seedUid > 0 and Grow then
-                local ground = 0
-                if Grow.CountSeedPlotCredit then
-                    ground = tonumber(Grow.CountSeedPlotCredit(seedUid)) or 0
-                elseif Grow.CountInGroundSeeds then
-                    ground = tonumber(Grow.CountInGroundSeeds(seedUid)) or 0
+            if seedUid > 0 then
+                local have = (tonumber(Inv.CountByUid(seedUid)) or 0) >= 1
+                if not have and Grow then
+                    local ground = 0
+                    if Grow.CountSeedPlotCredit then
+                        ground = tonumber(Grow.CountSeedPlotCredit(seedUid)) or 0
+                    elseif Grow.CountInGroundSeeds then
+                        ground = tonumber(Grow.CountInGroundSeeds(seedUid)) or 0
+                    end
+                    have = ground >= 1
                 end
-                if ground >= 1 then
-                    have = true
+                if have and req > best then
+                    best = req
                 end
-            end
-            if have and req > best then
-                best = req
             end
         end
     end
@@ -1929,7 +1930,29 @@ function CP.IsActivelyClimbingPlantWatches()
 end
 
 function CP.ShouldShowWatchStatus()
-    return CP.IsEnabled() == true
+    if CP.IsEnabled() ~= true then
+        return false
+    end
+    -- Only when a plant-watch climb is eligible+pending — IsEnabled alone kept
+    -- HasSkillUpWatchStatus true and re-armed Watch paint / plan nudges.
+    local Watch = StockPiler4.Watch
+    local plantWatches = Watch and Watch.GetPlantWatches and Watch.GetPlantWatches() or {}
+    if type(plantWatches) ~= "table" then
+        return false
+    end
+    for plantKey, watch in pairs(plantWatches) do
+        if type(watch) == "table" and watch.enabled == true then
+            local uid = Watch.ParsePlantKey and Watch.ParsePlantKey(plantKey) or 0
+            uid = tonumber(uid) or 0
+            if uid > 0 then
+                local d = CP.DescribePlantWatchClimb(uid)
+                if d.eligible == true and d.pending == true then
+                    return true
+                end
+            end
+        end
+    end
+    return false
 end
 
 --- Ephemeral Watch-tab rows for plant-watch Cult-max climbs. Never saved.
@@ -2061,7 +2084,9 @@ function CP.BuildWatchStatusRows()
                     name = TUpgrade("upgrade.watch.name", { name = name }),
                     iconNum = iconNum,
                     itemData = itemData,
-                    uniqueID = watchPlantUid,
+                    -- Do not share plantUid as uniqueID — PatchPlanSnapshotLiveStatus
+                    -- matched plant watch rows and painted upgrading on stocked watches.
+                    uniqueID = 0,
                     potionHave = d.have,
                     stockText = dash,
                     target = d.climbNeedReq,
@@ -2098,6 +2123,54 @@ function CP.Dump(emit)
     local cult = CP.GetCultSkill()
     emit("  cultSkill=" .. tostring(cult)
         .. " cultFloor=" .. tostring(CP.FloorCultTier(cult)))
+    emit("  allowClimb=" .. tostring(CP.WatchesAllowUpgradeClimb() == true))
+    -- Per plant-watch climb descriptor (why a stocked watch did/did not enroll).
+    local Watch = StockPiler4.Watch
+    local plantWatches = Watch and Watch.GetPlantWatches and Watch.GetPlantWatches() or {}
+    if type(plantWatches) == "table" then
+        local list = {}
+        for plantKey, watch in pairs(plantWatches) do
+            if type(watch) == "table" and watch.enabled == true then
+                list[#list + 1] = tostring(plantKey)
+            end
+        end
+        table.sort(list)
+        emit("  plantWatches=" .. tostring(#list))
+        for i = 1, #list do
+            local plantKey = list[i]
+            local watchPlantUid = Watch.ParsePlantKey and Watch.ParsePlantKey(plantKey) or 0
+            watchPlantUid = tonumber(watchPlantUid) or 0
+            local d = CP.DescribePlantWatchClimb(watchPlantUid)
+            local ladder = d.ladder
+            local parts = {}
+            if type(ladder) == "table" and type(ladder.rungs) == "table" then
+                for r = 1, #ladder.rungs do
+                    local rung = ladder.rungs[r]
+                    parts[#parts + 1] = string.format(
+                        "%d:s%d/p%d",
+                        tonumber(rung.skillReq) or 0,
+                        tonumber(rung.seedUid) or 0,
+                        tonumber(rung.plantUid) or 0
+                    )
+                end
+            end
+            emit(string.format(
+                "  watch[%s] uid=%s have=%s/%s stocked=%s mid=%s eligible=%s pending=%s watchedReq=%s climbNeed=%s key=%s %s",
+                plantKey,
+                tostring(watchPlantUid),
+                tostring(d.have),
+                tostring(d.target),
+                tostring(d.stocked == true),
+                tostring(d.midClimb == true),
+                tostring(d.eligible == true),
+                tostring(d.pending == true),
+                tostring(d.watchedReq),
+                tostring(d.climbNeedReq),
+                tostring(ladder and (ladder.key or ladder.genus) or "-"),
+                (#parts > 0) and table.concat(parts, " ") or "(no-ladder)"
+            ))
+        end
+    end
     local targets = GetUpgradeTargets()
     emit("  targets=" .. tostring(#targets))
     for i = 1, math.min(5, #targets) do
