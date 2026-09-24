@@ -3695,6 +3695,41 @@ local function RefreshStaleCtx(stale)
     return FormatCacheKey(stale.ctx)
 end
 
+--- Cheap/GardenPatch must refresh plant/refine intents: plot empty/fill flips
+--- plantIntent while RecipeStructuralKey stays the same. Stale nil plantIntent
+--- left Orch idle with empty plots until a force Build (/sp4 dumpall).
+local function RefreshPlantRefineIntents(stale)
+    if type(stale) ~= "table" then
+        return
+    end
+    local PlantPlan = StockPiler4.PlantPlan
+    local Grow = StockPiler4.Grow
+    local plantJob = nil
+    if PlantPlan and PlantPlan.PickPlantJob then
+        plantJob = PlantPlan.PickPlantJob({ demand = stale.demand })
+        if Grow and Grow.MarkPlantJobProbed then
+            Grow.MarkPlantJobProbed(plantJob)
+        end
+    elseif Grow and Grow.GetPlantJob then
+        plantJob = Grow.GetPlantJob()
+    end
+    if PlantPlan and PlantPlan.BuildPlantIntent then
+        stale.plantIntent = PlantPlan.BuildPlantIntent(plantJob)
+    else
+        stale.plantIntent = nil
+    end
+    local refineIntent = nil
+    local Refine = StockPiler4.Refine
+    if Refine and Refine.CollectIntents then
+        local intents = Refine.CollectIntents({ demand = stale.demand })
+        if type(intents) == "table" and #intents > 0 and type(intents[1]) == "table" then
+            refineIntent = intents[1]
+        end
+    end
+    stale.refineIntent = refineIntent
+    stale.refineIntents = refineIntent and { refineIntent } or {}
+end
+
 local function TryCheapRebuild()
     local PS = StockPiler4.PlanSnapshot
     local stale = PS and PS.Get and PS.Get()
@@ -3713,6 +3748,7 @@ local function TryCheapRebuild()
     stale.seedBufferTipData = BuildSeedBufferTipData({
         previous = stale.seedBufferTipData,
     })
+    RefreshPlantRefineIntents(stale)
     local key = RefreshStaleCtx(stale)
     local planGen = (tonumber(Planner._planGen) or 0) + 1
     Planner._planGen = planGen
@@ -3762,6 +3798,7 @@ local function TryGardenPatch()
             end
         end
     end
+    RefreshPlantRefineIntents(stale)
     local key = RefreshStaleCtx(stale)
     local planGen = (tonumber(Planner._planGen) or 0) + 1
     Planner._planGen = planGen
