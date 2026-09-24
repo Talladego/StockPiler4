@@ -1024,21 +1024,10 @@ function Grow.ShouldHoldPlantForReadyHarvest()
 end
 
 local function NudgeHarvestReadiness()
-    local Sch = StockPiler4.Scheduler
-    local hold = (Sch and Sch.SkipUiThisFrameActive and Sch.SkipUiThisFrameActive() == true)
-        or (Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true)
-        or (Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
-        or (Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true)
+    -- Coalesce only — never immediate SyncActionReadiness on harvest op-lock edges.
     local Bus = StockPiler4.EventBus
     if Bus and Bus.FireFooterDirty then
-        if hold then
-            Bus.FireFooterDirty()
-        else
-            Bus.FireFooterDirty({ immediate = true })
-        end
-    end
-    if hold then
-        return
+        Bus.FireFooterDirty()
     end
 end
 
@@ -1181,41 +1170,31 @@ function Grow.MaybeNotifyHarvestReady()
     local canHarvest = Grow.CanHarvestNow() == true
     local ready = allReady == true and canHarvest == true
     local wasReady = Grow._harvestReadyLatched == true
-    local Sch = StockPiler4.Scheduler
-    -- Never SyncActionReadiness (CanBrewNow + Macro.Appearance) during cult storms —
-    -- that was the 10s Footer/Macro trail piled on CultivationUpdated x4.
-    local holdFooter = (Sch and Sch.SkipUiThisFrameActive and Sch.SkipUiThisFrameActive() == true)
-        or (Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true)
-        or (Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
-        or (Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true)
-    local function NudgeFooter(forceImmediate)
+    -- Never SyncActionReadiness (CanBrewNow + Macro.Appearance) on this path —
+    -- immediate Footer was the 10s Macro trail piled on CultivationUpdated x4.
+    local function NudgeFooter()
         local Bus = StockPiler4.EventBus
-        if not Bus or not Bus.FireFooterDirty then
-            return
-        end
-        if holdFooter or forceImmediate ~= true then
+        if Bus and Bus.FireFooterDirty then
             Bus.FireFooterDirty()
-            return
         end
-        Bus.FireFooterDirty({ immediate = true })
     end
     -- Enable Harvest as soon as any plot is harvestable (not only all-planted latch).
     if canHarvest then
         if Grow._canHarvestLatched ~= true then
-            NudgeFooter(true)
+            NudgeFooter()
             Grow._canHarvestLatched = true
         else
-            NudgeFooter(false)
+            NudgeFooter()
         end
     elseif Grow._canHarvestLatched == true then
         Grow._canHarvestLatched = false
-        NudgeFooter(false)
+        NudgeFooter()
     end
     if ready then
         if not wasReady then
-            NudgeFooter(true)
+            NudgeFooter()
         else
-            NudgeFooter(false)
+            NudgeFooter()
         end
         Grow._harvestReadyLatched = true
         if Grow._harvestReadyChatSent ~= true then
@@ -1234,7 +1213,7 @@ function Grow.MaybeNotifyHarvestReady()
         end
     else
         if wasReady then
-            NudgeFooter(false)
+            NudgeFooter()
         end
         Grow._harvestReadyLatched = false
         Grow._harvestReadyChatSent = false

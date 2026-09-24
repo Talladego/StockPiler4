@@ -167,26 +167,18 @@ function Bridge.OnCultivationUpdated()
     if Sch and Sch.SkipUiThisFrame then
         Sch.SkipUiThisFrame()
     end
+    if Sch and Sch.SkipPlanThisFrame then
+        Sch.SkipPlanThisFrame()
+    end
     if Grow and Grow.IsHarvestOpActive and Grow.IsHarvestOpActive() == true then
         if Sch and Sch.ArmHarvestStorm then
             Sch.ArmHarvestStorm()
         end
-        if Sch and Sch.SkipPlanThisFrame then
-            Sch.SkipPlanThisFrame()
-        end
     end
-    -- Plant / additive commit storms: extend quiet so soil/water/nutrient
-    -- CultivationUpdated x4 does not flush Footer/RefreshWatch (libperf ~10s trail).
-    local cultBusy = Grow and (
-        (Grow.HasPendingPlant and Grow.HasPendingPlant() == true)
-        or (Grow.HasPendingAdditive and Grow.HasPendingAdditive() == true)
-        or (Grow.NeedsCurrentStageAdditive and Grow.NeedsCurrentStageAdditive() == true)
-    )
-    if cultBusy and Sch and Sch.ArmPlantQuiet then
+    -- Always arm plant quiet on ANY CultivationUpdated (soil/water/nutrient after
+    -- pending clear still piled Footer/RefreshWatch when gated on cultBusy only).
+    if Sch and Sch.ArmPlantQuiet then
         Sch.ArmPlantQuiet()
-        if Sch.SkipPlanThisFrame then
-            Sch.SkipPlanThisFrame()
-        end
     end
     if StockPiler4.Garden and StockPiler4.Garden.OnCultivationUpdated then
         StockPiler4.Garden.OnCultivationUpdated(plotNum)
@@ -199,16 +191,8 @@ function Bridge.OnCultivationUpdated()
     if StockPiler4.LearnBridge and StockPiler4.LearnBridge.OnCultivationUpdated then
         StockPiler4.LearnBridge.OnCultivationUpdated()
     end
-    -- Footer via coalesced flush only — never SyncActionReadiness per plot.
+    -- Never Footer on cult frames — quiet holds coalesce until quiet-end.
     local storm = Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true
-    local quiet = Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true
-    local settling = Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true
-    if not storm and not quiet and not settling then
-        local Bus = StockPiler4.EventBus
-        if Bus and Bus.FireFooterDirty then
-            Bus.FireFooterDirty()
-        end
-    end
     if Grow and Grow.NeedsCurrentStageAdditive and Grow.NeedsCurrentStageAdditive()
         and Sch and Sch.SetAutoGrowIdle
         and not storm

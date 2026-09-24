@@ -506,12 +506,12 @@ local function FinishWarmHaveSlice()
     Planner._warmHaveSlice = nil
     if type(slice) ~= "table" or type(slice.pending) ~= "table" then
         MarkHaveCacheWarmed(CurrentSnapGen())
-        return
+        return "done"
     end
     local cache, snapGen = EnsureHaveCacheForSnap()
     if snapGen ~= (tonumber(slice.snapGen) or -1) then
-        -- Snap moved mid-slice; full warm next prewarm.
-        return
+        -- Snap moved mid-slice; FrameWork restarts collect (no cold PlanRebuild).
+        return "restart"
     end
     PerfMark("WarmHave.miss")
     local pending = slice.pending
@@ -564,6 +564,7 @@ local function FinishWarmHaveSlice()
         cache[entry.key] = tonumber(totals[entry.key]) or 0
     end
     MarkHaveCacheWarmed(snapGen)
+    return "done"
 end
 
 local function CountItemsMatchingSpec(spec, opts)
@@ -3780,22 +3781,38 @@ local function RefreshPlantRefineIntents(stale)
     end
     local PlantPlan = StockPiler4.PlantPlan
     local Grow = StockPiler4.Grow
-    local plantJob = nil
-    if PlantPlan and PlantPlan.PickPlantJob then
-        plantJob = PlantPlan.PickPlantJob({ demand = stale.demand })
-        if Grow and Grow.MarkPlantJobProbed then
-            Grow.MarkPlantJobProbed(plantJob)
+    local needPlantPick = Grow and Grow.HasEmptyPlot and Grow.HasEmptyPlot() == true
+    -- Keep a seeded plantIntent when plots are full (no PickPlantCandidate).
+    if needPlantPick or not PlantIntentHasSeed(stale) then
+        local plantJob = nil
+        if PlantPlan and PlantPlan.PickPlantJob then
+            plantJob = PlantPlan.PickPlantJob({ demand = stale.demand })
+            if Grow and Grow.MarkPlantJobProbed then
+                Grow.MarkPlantJobProbed(plantJob)
+            end
+        elseif Grow and Grow.GetPlantJob then
+            plantJob = Grow.GetPlantJob()
         end
-    elseif Grow and Grow.GetPlantJob then
-        plantJob = Grow.GetPlantJob()
+        if PlantPlan and PlantPlan.BuildPlantIntent then
+            stale.plantIntent = PlantPlan.BuildPlantIntent(plantJob)
+        else
+            stale.plantIntent = nil
+        end
     end
-    if PlantPlan and PlantPlan.BuildPlantIntent then
-        stale.plantIntent = PlantPlan.BuildPlantIntent(plantJob)
-    else
-        stale.plantIntent = nil
+    -- Skip CollectIntents/BufferFlags when buffer not pending and refine idle.
+    local Refine = StockPiler4.Refine
+    local needRefine = false
+    if Refine then
+        if Refine.IsDirty and Refine.IsDirty() == true then
+            needRefine = true
+        elseif Refine.PeekCachedBufferPending and Refine.PeekCachedBufferPending() == true then
+            needRefine = true
+        end
+    end
+    if not needRefine then
+        return
     end
     local refineIntent = nil
-    local Refine = StockPiler4.Refine
     if Refine and Refine.CollectIntents then
         local intents = Refine.CollectIntents({ demand = stale.demand })
         if type(intents) == "table" and #intents > 0 and type(intents[1]) == "table" then
@@ -3886,7 +3903,11 @@ local function TryCheapRebuild()
         PerfEnd("Planner.CheapRebuild")
         return nil
     end
-    PatchWatchRowsLiveCounts(plan.rows, { syncSnapshot = false })
+    -- Never sync WarmHave.miss inside CheapRebuild — FrameWork prewarm owns bag walks.
+    PatchWatchRowsLiveCounts(plan.rows, {
+        syncSnapshot = false,
+        allowWarmHave = false,
+    })
     plan.seedBufferTipData = BuildSeedBufferTipData({
         previous = plan.seedBufferTipData,
     })
@@ -3964,7 +3985,10 @@ local function BuildFull(opts)
     PerfBegin("Build.WarmHave")
     if IsHaveCacheWarmForSnap() then
         -- prewarm hit
+    elseif HoldHaveCacheQuiet() then
+        EnsureHaveCacheForSnap()
     else
+        -- Prefer FrameWork slice; sync miss only when warm-hold already expired.
         WarmSpecHaveCacheForWatches()
     end
     PerfEnd("Build.WarmHave")
@@ -3980,13 +4004,16 @@ local function BuildFull(opts)
     local PlantPlan = StockPiler4.PlantPlan
     local Grow = StockPiler4.Grow
     local plantJob = nil
-    if PlantPlan and PlantPlan.PickPlantJob then
-        plantJob = PlantPlan.PickPlantJob({ demand = demand })
-        if Grow and Grow.MarkPlantJobProbed then
-            Grow.MarkPlantJobProbed(plantJob)
+    local needPlantPick = Grow and Grow.HasEmptyPlot and Grow.HasEmptyPlot() == true
+    if needPlantPick then
+        if PlantPlan and PlantPlan.PickPlantJob then
+            plantJob = PlantPlan.PickPlantJob({ demand = demand })
+            if Grow and Grow.MarkPlantJobProbed then
+                Grow.MarkPlantJobProbed(plantJob)
+            end
+        elseif Grow and Grow.GetPlantJob then
+            plantJob = Grow.GetPlantJob()
         end
-    elseif Grow and Grow.GetPlantJob then
-        plantJob = Grow.GetPlantJob()
     end
     local plantIntent = PlantPlan and PlantPlan.BuildPlantIntent and PlantPlan.BuildPlantIntent(plantJob) or nil
     local BuyPlan = StockPiler4.BuyPlan
@@ -3995,7 +4022,11 @@ local function BuildFull(opts)
     local brewIntent = BrewPlan and BrewPlan.BuildIntent and BrewPlan.BuildIntent({ rows = rows }) or nil
     local refineIntent = nil
     local Refine = StockPiler4.Refine
-    if Refine and Refine.CollectIntents then
+    local needRefine = Refine and (
+        (Refine.IsDirty and Refine.IsDirty() == true)
+        or (Refine.PeekCachedBufferPending and Refine.PeekCachedBufferPending() == true)
+    )
+    if needRefine and Refine and Refine.CollectIntents then
         local intents = Refine.CollectIntents({ demand = demand })
         if type(intents) == "table" and #intents > 0 and type(intents[1]) == "table" then
             refineIntent = intents[1]

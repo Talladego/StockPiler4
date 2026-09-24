@@ -16,14 +16,13 @@ Sch.BAG_COALESCE_SEC = 2.0
 Sch.PLAN_MAX_WAIT_SEC = 0.5
 Sch.PLAN_COALESCE_WHEN_AWAKE_SEC = 3.0
 Sch.PLAN_MIN_GAP_SEC = 2.0
-Sch.PLAN_WARM_HOLD_MAX_SEC = 3.0
+Sch.PLAN_WARM_HOLD_MAX_SEC = 5.0
 Sch.SESSION_SETTLE_SEC = 2.5
 Sch.AUTO_TICK_SEC = 1.0
 Sch.AUTO_TICK_IDLE_SEC = 5.0
 Sch.HARVEST_STORM_MIN_SEC = 1.5
--- Cover plant/refine inventory + CultivationUpdated lag. 1.25 still left
--- BufferFlags/Demand rebuilds between IssueOne and the next orch tick (libperf).
-Sch.PLANT_QUIET_BASE_SEC = 2.0
+-- Cover plant/refine inventory + CultivationUpdated lag (soil/water/nutrient x4).
+Sch.PLANT_QUIET_BASE_SEC = 2.5
 Sch.PLAN_DEBOUNCE_SEC = 0.05
 
 Sch._bagDue = false
@@ -934,12 +933,12 @@ function Sch.OnUpdate(timeElapsed)
     if not didHeavy and RebuildPlanIfDue() then
         didHeavy = true
     end
-    skip.plan = false
-    FlushWatchUiIfDue(didHeavy)
-    skip.ui = false
 
+    -- Orch before Watch flush so PlantSeed/AddAdditive nested CultivationUpdated
+    -- can SkipUi before RefreshWatch (was: flush then plant → Watch painted first).
     Sch._autoAccum = (tonumber(Sch._autoAccum) or 0) + (tonumber(timeElapsed) or 0)
     local tickSec = AutoTickIntervalSec()
+    local didOrch = false
     if Sch._autoAccum >= tickSec then
         Sch._autoAccum = Sch._autoAccum - tickSec
         if StockPiler4.Refine and StockPiler4.Refine.DecayRefineWaitTicks then
@@ -960,10 +959,21 @@ function Sch.OnUpdate(timeElapsed)
             and StockPiler4.Orchestrator and StockPiler4.Orchestrator.Tick
         then
             StockPiler4.Orchestrator.Tick()
+            didOrch = true
+            -- Plant/additive nested cult may have armed SkipUi; keep hold for Watch/Footer.
+            if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+                Sch.SkipUiThisFrame()
+                Sch.SkipPlanThisFrame()
+            end
         end
     else
         skip.orch = false
     end
+
+    -- One heavy: if orch ran, do not also Flatten Watch this frame.
+    skip.plan = false
+    FlushWatchUiIfDue(didHeavy or didOrch)
+    skip.ui = false
 end
 
 function Sch.Initialize()

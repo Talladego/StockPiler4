@@ -647,6 +647,9 @@ end
 function Refine.PeekCachedBufferPending()
     local flags = Refine._bufferFlags
     if type(flags) ~= "table" then
+        flags = Refine._bufferFlagsSticky
+    end
+    if type(flags) ~= "table" then
         return false
     end
     return flags.pending == true
@@ -655,6 +658,7 @@ end
 --- True when BufferFlags cache is warm (orch can peek without rebuild).
 function Refine.HasBufferFlagsCache()
     return type(Refine._bufferFlags) == "table"
+        or type(Refine._bufferFlagsSticky) == "table"
 end
 
 --- O(1) urgent snap invalidate - do not rebuild BufferFlags / HasAnyBufferShort here.

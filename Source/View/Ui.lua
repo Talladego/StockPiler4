@@ -193,6 +193,20 @@ local function OnFooterDirty(payload)
     if type(payload) ~= "table" or payload.immediate ~= true then
         return
     end
+    -- Never SyncActionReadiness under plant quiet / cult SkipUi hold (libperf
+    -- Footer+Macro.Appearance on CultivationUpdated trails).
+    local Sch = StockPiler4.Scheduler
+    if Sch then
+        if Sch.SkipUiHoldFooter and Sch.SkipUiHoldFooter() == true then
+            return
+        end
+        if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+            return
+        end
+        if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
+            return
+        end
+    end
     if StockPiler4Window and StockPiler4Window.SyncActionReadiness then
         StockPiler4Window.SyncActionReadiness({ immediate = true })
     elseif payload.syncMacro == true then

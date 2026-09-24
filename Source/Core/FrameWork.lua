@@ -223,7 +223,7 @@ function FW.EnqueueWarmHave(gen)
             if not P then
                 return "done"
             end
-            if state.phase == nil then
+            if state.phase == nil or state.phase == "restart" then
                 state.phase = "collect"
                 if P.BeginWarmHaveSlice then
                     local result = P.BeginWarmHaveSlice()
@@ -240,10 +240,15 @@ function FW.EnqueueWarmHave(gen)
                 return "done"
             end
             if state.phase == "collect" then
-                state.phase = "bag"
                 if P.FinishWarmHaveSlice then
-                    P.FinishWarmHaveSlice()
+                    local result = P.FinishWarmHaveSlice()
+                    -- Snap moved mid-slice: restart collect (do not publish cold).
+                    if result == "restart" then
+                        state.phase = "restart"
+                        return "continue"
+                    end
                 end
+                state.phase = "bag"
                 return "done"
             end
             return "done"
