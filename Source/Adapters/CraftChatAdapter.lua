@@ -14,7 +14,7 @@ local PLANT_CHAT_META_TTL_SEC = 30
 local PENDING_EMPTY_GRACE_SEC = 5.0
 
 local function NowSec()
-    return StockPiler4.Util and StockPiler4.Util.NowSec and StockPiler4.Util.NowSec() or 0
+    return StockPiler4.Util.NowSec()
 end
 
 local function TryQuiet(label, fn, ...)

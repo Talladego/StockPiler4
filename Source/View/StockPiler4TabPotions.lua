@@ -40,8 +40,8 @@ local SORT_HEADERS = {
     have = "SP4TabPotionsSortHave",
 }
 
-local function ToNarrow(text)
-    return StockPiler4.Util.ToNarrow(text)
+local function ToNarrow(value)
+    return StockPiler4.Util.ToNarrow(value)
 end
 
 local function GetSettings()

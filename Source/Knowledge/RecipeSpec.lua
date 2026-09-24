@@ -29,8 +29,8 @@ local CRAFT_BONUS = {
 -- Account / narrow helpers
 ----------------------------------------------------------------
 
-local function ToNarrow(text)
-    return StockPiler4.Util.ToNarrow(text)
+local function ToNarrow(value)
+    return StockPiler4.Util.ToNarrow(value)
 end
 
 --- Prefer Account tables directly so migrate/hydrate never re-enter EnsureAccount.

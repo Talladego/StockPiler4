@@ -414,35 +414,6 @@ local function ApplyTargetOptimistic(data, target)
     end
 end
 
-local function PatchPlanSnapshotTarget(potionKey, target, have)
-    if potionKey == nil then
-        return
-    end
-    target = tonumber(target) or 0
-    have = tonumber(have)
-    local PS = StockPiler4.PlanSnapshot
-    local plan = PS and PS.Get and PS.Get()
-    if type(plan) ~= "table" or type(plan.rows) ~= "table" then
-        return
-    end
-    local keyStr = tostring(potionKey)
-    for i = 1, #plan.rows do
-        local row = plan.rows[i]
-        if type(row) == "table" then
-            local rowKey = row.potionRecipeKey or row.id or row.potionKey
-            if rowKey ~= nil and tostring(rowKey) == keyStr then
-                row.target = target
-                row.potionMin = target
-                local rowHave = have
-                if rowHave == nil then
-                    rowHave = tonumber(row.potionHave) or 0
-                end
-                row.potionDeficit = math.max(0, target - rowHave)
-            end
-        end
-    end
-end
-
 local function TargetChangeIsDemandNoop(have, oldTarget, newTarget)
     have = tonumber(have) or 0
     oldTarget = tonumber(oldTarget) or 0
@@ -461,8 +432,8 @@ end
 local function AfterTargetChipChanged(data, potionKey, oldTarget, newTarget)
     local have = tonumber(data and data.potionHave) or 0
     if TargetChangeIsDemandNoop(have, oldTarget, newTarget) then
+        -- Optimistic local row only — do not mutate PlanSnapshot.rows (immutable contract).
         ApplyTargetOptimistic(data, newTarget)
-        PatchPlanSnapshotTarget(potionKey, newTarget, have)
         return
     end
     ApplyTargetOptimistic(data, newTarget)
@@ -1451,8 +1422,8 @@ local function TipTradeSkill(skillId)
     end
 end
 
-local function ToNarrow(v)
-    return StockPiler4.Util.ToNarrow(v)
+local function ToNarrow(value)
+    return StockPiler4.Util.ToNarrow(value)
 end
 
 local function RgbDef(rgb)

@@ -1544,7 +1544,7 @@ SkillUp.SKILL_RATES_SCHEMA = 2
 SkillUp.APO_VIAL_BUY_CAP = 300
 
 local function NowSec()
-    return StockPiler4.Util and StockPiler4.Util.NowSec and StockPiler4.Util.NowSec() or 0
+    return StockPiler4.Util.NowSec()
 end
 
 local function RatesTable()

@@ -388,8 +388,8 @@ local function IsMaterialSpec(t)
         and t.uniqueID == nil
 end
 
-local function ToNarrow(text)
-    return StockPiler4.Util.ToNarrow(text)
+local function ToNarrow(value)
+    return StockPiler4.Util.ToNarrow(value)
 end
 
 -- Infer EFFECT when craftingBonus omits ref 6 (common on heal/stat mains).

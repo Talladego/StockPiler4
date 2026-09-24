@@ -37,7 +37,7 @@ Refine._liveSeedBaseline = Refine._liveSeedBaseline or {}
 ----------------------------------------------------------------
 
 local function NowSec()
-    return StockPiler4.Util and StockPiler4.Util.NowSec and StockPiler4.Util.NowSec() or 0
+    return StockPiler4.Util.NowSec()
 end
 
 local function LogRefine(msg)

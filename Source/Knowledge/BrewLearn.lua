@@ -256,7 +256,7 @@ end
 local BOARD_SNAPSHOT_TTL_SEC = 45
 
 local function NowSec()
-    return StockPiler4.Util and StockPiler4.Util.NowSec and StockPiler4.Util.NowSec() or 0
+    return StockPiler4.Util.NowSec()
 end
 
 local function LatchSuccessChance()

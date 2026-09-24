@@ -40,8 +40,8 @@ local SORT_HEADERS = {
     stock = "SP4TabPlantsSortStock",
 }
 
-local function ToNarrow(text)
-    return StockPiler4.Util.ToNarrow(text)
+local function ToNarrow(value)
+    return StockPiler4.Util.ToNarrow(value)
 end
 
 local function GetSettings()

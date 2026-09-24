@@ -40,12 +40,12 @@ local INFERTILE_SEED_UID = {
 -- Helpers (callees first)
 ----------------------------------------------------------------
 
-local function ToNarrow(text)
-    return StockPiler4.Util.ToNarrow(text)
+local function ToNarrow(value)
+    return StockPiler4.Util.ToNarrow(value)
 end
 
 local function NowSec()
-    return StockPiler4.Util and StockPiler4.Util.NowSec and StockPiler4.Util.NowSec() or 0
+    return StockPiler4.Util.NowSec()
 end
 
 local function GrowsTable()

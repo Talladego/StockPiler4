@@ -6,8 +6,8 @@ StockPiler4 = StockPiler4 or {}
 StockPiler4.Additives = StockPiler4.Additives or {}
 local AD = StockPiler4.Additives
 
-local function ToNarrow(text)
-    return StockPiler4.Util.ToNarrow(text)
+local function ToNarrow(value)
+    return StockPiler4.Util.ToNarrow(value)
 end
 
 local function CultTypes()
