@@ -118,7 +118,9 @@ local function IsWatchPlanStale()
 end
 
 --- Hold Watch paint during harvest storm, refine outstanding, buffer refine,
---- AutoBuy visit, FrameWork busy, or session settle.
+--- AutoBuy visit, or FrameWork busy. Session settle only defers while the
+--- window is closed (open must paint immediately — settle used to leave
+--- footer Harvest/Brew overlapping Clear Watches for ~2.5s).
 local function ShouldDeferWatchFlush()
     local Sch = StockPiler4.Scheduler
     if Sch and Sch.SkipUiThisFrameActive and Sch.SkipUiThisFrameActive() == true then
@@ -127,7 +129,11 @@ local function ShouldDeferWatchFlush()
     if Sch and Sch._skipUiThisFrame == true then
         return true
     end
-    if Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true then
+    local windowOpen = DoesWindowExist("StockPiler4Window")
+        and WindowGetShowing("StockPiler4Window") == true
+    if not windowOpen
+        and Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true
+    then
         return true
     end
     if Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then

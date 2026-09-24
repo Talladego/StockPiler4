@@ -443,10 +443,14 @@
                 <AbsPoint x="1000" y="32" />
             </Size>
             <Windows>
-                <FullResizeImage name="$parentBackground" inherits="EA_FullResizeImage_TintableSolidBackground" handleinput="false">
+                <FullResizeImage name="$parentBackground" inherits="EA_FullResizeImage_TintableSolidBackground" layer="background" handleinput="false">
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft" />
-                        <Anchor point="bottomright" relativePoint="bottomright" />
+                        <!-- Inset for EA_ScrollBar_DefaultVerticalChain (~22–26px) so zebra
+                             does not paint over the scrollbar track. -->
+                        <Anchor point="bottomright" relativePoint="bottomright">
+                            <AbsPoint x="-28" y="0" />
+                        </Anchor>
                     </Anchors>
                 </FullResizeImage>
 

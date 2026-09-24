@@ -437,7 +437,7 @@
                     </Anchors>
                 </Button>
 
-                <ListBox name="$parentList" scrollbar="EA_ScrollBar_DefaultVerticalChain" rowdef="StockPiler4WatchRow" visiblerows="12" rowspacing="2">
+                <ListBox name="$parentList" scrollbar="EA_ScrollBar_DefaultVerticalChain" rowdef="StockPiler4WatchRow" visiblerows="10" rowspacing="2">
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
                             <AbsPoint x="0" y="178" />

@@ -212,7 +212,12 @@ function StockPiler4Window.FlushPendingFooterRefresh()
     if Sch and Sch.SkipUiHoldFooter and Sch.SkipUiHoldFooter() == true then
         return
     end
-    if Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true then
+    local windowOpen = DoesWindowExist("StockPiler4Window")
+        and WindowGetShowing("StockPiler4Window") == true
+    -- Session settle must not leave Harvest/Brew/Clear Watches stacked while open.
+    if not windowOpen
+        and Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true
+    then
         return
     end
     local RP = StockPiler4.RefinePipeline
@@ -362,11 +367,17 @@ function StockPiler4Window.OnShow()
         StockPiler4TabWatch.PrimeRowChrome()
     end
     StockPiler4Window.PrimeTabListsIfNeeded()
+    -- Footer chrome immediately (do not wait for coalesce / settle).
+    StockPiler4Window.SyncActionReadiness({ immediate = true })
     -- Coalesced paint after FrameWork prewarm + PlanRebuild (never sync Flatten).
     if StockPiler4.Ui and StockPiler4.Ui.MarkWatchUiDirty then
         StockPiler4.Ui.MarkWatchUiDirty()
     else
         StockPiler4Window.RequestListRepopulate()
+    end
+    -- Paint active tab from last plan now; dirty flush will refresh when rebuild lands.
+    if StockPiler4Window.RefreshActiveTab then
+        StockPiler4Window.RefreshActiveTab()
     end
     StockPiler4Window.RequestFooterRefresh()
 end
