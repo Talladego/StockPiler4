@@ -458,8 +458,8 @@ local function HasEnabledWatch()
 end
 
 local function HasSkillUpWatchStatus()
-    local SkillUp = StockPiler4.SkillUp
-    if SkillUp and SkillUp.ShouldShowWatchStatus and SkillUp.ShouldShowWatchStatus() == true then
+    local SWS = StockPiler4.SkillUpWatchStatus
+    if SWS and SWS.ShouldShowWatchStatus and SWS.ShouldShowWatchStatus() == true then
         return true
     end
     local US = StockPiler4.UpgradeSeed
@@ -589,12 +589,12 @@ local function UpdateCombatPauseCheckbox()
 end
 
 local function UpdateSkillUpCheckboxes()
-    local SkillUp = StockPiler4.SkillUp
-    local cultVis = SkillUp and SkillUp.IsCultVisible and SkillUp.IsCultVisible() == true
-    local apoVis = SkillUp and SkillUp.IsApoVisible and SkillUp.IsApoVisible() == true
+    local Gates = StockPiler4.SkillUpGates
+    local cultVis = Gates and Gates.IsCultVisible and Gates.IsCultVisible() == true
+    local apoVis = Gates and Gates.IsApoVisible and Gates.IsApoVisible() == true
     local show = cultVis == true or apoVis == true
-    local cultOn = SkillUp and SkillUp.IsCultEnabled and SkillUp.IsCultEnabled() == true
-    local apoOn = SkillUp and SkillUp.IsApoEnabled and SkillUp.IsApoEnabled() == true
+    local cultOn = Gates and Gates.IsCultEnabled and Gates.IsCultEnabled() == true
+    local apoOn = Gates and Gates.IsApoEnabled and Gates.IsApoEnabled() == true
     local on = (cultVis == true and cultOn == true) or (apoVis == true and apoOn == true)
 
     if DoesWindowExist(SKILLUP_SKILLS_WIN) then
@@ -835,11 +835,11 @@ function StockPiler4TabWatch.RefreshSkillGates()
     local reserve = type(row) == "table" and tonumber(row.autoBuyReserveGold) or 10
     local budget = type(row) == "table" and tonumber(row.autoBuyBudgetGold) or 50
     local spent = type(row) == "table" and tonumber(row.autoBuySpentBrass) or 0
-    local SkillUp = StockPiler4.SkillUp
-    local skillUpCult = SkillUp and SkillUp.IsCultEnabled and SkillUp.IsCultEnabled() == true
-    local skillUpApo = SkillUp and SkillUp.IsApoEnabled and SkillUp.IsApoEnabled() == true
-    local cultVis = SkillUp and SkillUp.IsCultVisible and SkillUp.IsCultVisible() == true
-    local apoVis = SkillUp and SkillUp.IsApoVisible and SkillUp.IsApoVisible() == true
+    local Gates = StockPiler4.SkillUpGates
+    local skillUpCult = Gates and Gates.IsCultEnabled and Gates.IsCultEnabled() == true
+    local skillUpApo = Gates and Gates.IsApoEnabled and Gates.IsApoEnabled() == true
+    local cultVis = Gates and Gates.IsCultVisible and Gates.IsCultVisible() == true
+    local apoVis = Gates and Gates.IsApoVisible and Gates.IsApoVisible() == true
     local UpgradeSeed = StockPiler4.UpgradeSeed
     local upgradeOn = UpgradeSeed and UpgradeSeed.IsEnabled and UpgradeSeed.IsEnabled() == true
     local gatesKey = table.concat({
@@ -1181,19 +1181,19 @@ function StockPiler4TabWatch.OnToggleSkillUpSkills()
     if syncingUi then
         return
     end
-    local SkillUp = StockPiler4.SkillUp
-    local cultVis = SkillUp and SkillUp.IsCultVisible and SkillUp.IsCultVisible() == true
-    local apoVis = SkillUp and SkillUp.IsApoVisible and SkillUp.IsApoVisible() == true
+    local Gates = StockPiler4.SkillUpGates
+    local cultVis = Gates and Gates.IsCultVisible and Gates.IsCultVisible() == true
+    local apoVis = Gates and Gates.IsApoVisible and Gates.IsApoVisible() == true
     if cultVis ~= true and apoVis ~= true then
         UpdateSkillUpCheckboxes()
         return
     end
     local on = ButtonGetPressedFlag(SKILLUP_SKILLS_WIN) == true
-    if cultVis == true and SkillUp.SetCultEnabled then
-        SkillUp.SetCultEnabled(on)
+    if cultVis == true and Gates.SetCultEnabled then
+        Gates.SetCultEnabled(on)
     end
-    if apoVis == true and SkillUp.SetApoEnabled then
-        SkillUp.SetApoEnabled(on)
+    if apoVis == true and Gates.SetApoEnabled then
+        Gates.SetApoEnabled(on)
     end
     NotifySettings(T("watch.skillup_skills_state", { state = OnOff(on) }))
     AfterWatchSettingsChanged()

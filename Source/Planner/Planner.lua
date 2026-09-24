@@ -183,12 +183,12 @@ local function SettingsHash()
         hash = hash + (Caps.GetCultSkill and Caps.GetCultSkill() or 0) * 11
         hash = hash + (Caps.GetApoSkill and Caps.GetApoSkill() or 0) * 13
     end
-    local SkillUp = StockPiler4.SkillUp
-    if SkillUp then
-        if SkillUp.IsCultEnabled and SkillUp.IsCultEnabled() == true then
+    local Gates = StockPiler4.SkillUpGates
+    if Gates then
+        if Gates.IsCultEnabled and Gates.IsCultEnabled() == true then
             hash = hash + 17
         end
-        if SkillUp.IsApoEnabled and SkillUp.IsApoEnabled() == true then
+        if Gates.IsApoEnabled and Gates.IsApoEnabled() == true then
             hash = hash + 19
         end
     end
@@ -3180,9 +3180,9 @@ local function BuildWatchRows(ctx)
             end
         end
     end
-    local SkillUp = StockPiler4.SkillUp
-    if SkillUp and SkillUp.BuildWatchStatusRows then
-        local skillRows = SkillUp.BuildWatchStatusRows() or {}
+    local SWS = StockPiler4.SkillUpWatchStatus
+    if SWS and SWS.BuildWatchStatusRows then
+        local skillRows = SWS.BuildWatchStatusRows() or {}
         for i = 1, #skillRows do
             local sr = skillRows[i]
             if type(sr) == "table" then
@@ -3262,7 +3262,7 @@ local function RefreshSkillUpWatchRows(rows, opts)
     if type(rows) ~= "table" or #rows == 0 then
         return false
     end
-    local SkillUp = StockPiler4.SkillUp
+    local SWS = StockPiler4.SkillUpWatchStatus
     local UpgradeSeed = StockPiler4.UpgradeSeed
     local fresh = {}
     if UpgradeSeed and UpgradeSeed.BuildWatchStatusRows then
@@ -3271,13 +3271,13 @@ local function RefreshSkillUpWatchRows(rows, opts)
             fresh[#fresh + 1] = up[i]
         end
     end
-    if SkillUp and SkillUp.BuildWatchStatusRows then
-        local sk = SkillUp.BuildWatchStatusRows() or {}
+    if SWS and SWS.BuildWatchStatusRows then
+        local sk = SWS.BuildWatchStatusRows() or {}
         for i = 1, #sk do
             fresh[#fresh + 1] = sk[i]
         end
     end
-    if #fresh < 1 and not (SkillUp and SkillUp.BuildWatchStatusRows)
+    if #fresh < 1 and not (SWS and SWS.BuildWatchStatusRows)
         and not (UpgradeSeed and UpgradeSeed.BuildWatchStatusRows)
     then
         return false

@@ -2255,10 +2255,11 @@ function SM.DumpCraftCycleStats(emit)
         emit("  (none)")
     end
 
-    local SkillUp = StockPiler4.SkillUp
-    if SkillUp and SkillUp.DumpRates then
-        SkillUp.DumpRates(emit)
+    local Rates = StockPiler4.SkillRates
+    if Rates and Rates.DumpRates then
+        Rates.DumpRates(emit)
     end
+
 
     local refines = RefinesTable() or {}
     emit("--- refines (plant) ---")

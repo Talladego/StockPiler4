@@ -464,31 +464,6 @@ end
 --- Back-compat alias used by plant/refine/buy paths.
 function Gates.ShouldCultPlant()
     return Gates.ShouldCultGrowForSkillUp() == true
-
-local function Reexport()
-    local SU = StockPiler4.SkillUp
-    if type(SU) ~= "table" then
-        SU = {}
-        StockPiler4.SkillUp = SU
-    end
-    local names = {
-        "CULT_MAX", "APO_MAX", "CULT_TIERS", "APO_TIERS",
-        "FloorApoTier", "FloorCultTier", "GetCultSkill", "GetApoSkill",
-        "IsCultTrained", "IsApoTrained", "IsCultVisible", "IsApoVisible",
-        "IsCultEnabled", "IsApoEnabled", "SetCultEnabled", "SetApoEnabled",
-        "WatchesDone", "AllShortWatchesProgressBlocked", "WatchesAllowIdleSkillUp",
-        "TargetMaxSkill", "ShouldCultGrowForSkillUp", "ShouldCultPlant",
-    }
-    for i = 1, #names do
-        local n = names[i]
-        if Gates[n] ~= nil then
-            SU[n] = Gates[n]
-        end
-    end
 end
 
-function Gates.SyncSkillUpExports()
-    Reexport()
-end
 
-Reexport()

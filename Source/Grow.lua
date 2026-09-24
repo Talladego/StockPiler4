@@ -781,11 +781,12 @@ function Grow.ExecutePlant(intent, opId)
         tostring(opId or "?")
     ))
     if tostring(job.plantReason or "") == "skill_up" then
-        local SkillUp = StockPiler4.SkillUp
-        if SkillUp and SkillUp.NoteCultAttempt
-            and SkillUp.IsCultEnabled and SkillUp.IsCultEnabled() == true
+        local Rates = StockPiler4.SkillRates
+        local Gates = StockPiler4.SkillUpGates
+        if Rates and Rates.NoteCultAttempt
+            and Gates and Gates.IsCultEnabled and Gates.IsCultEnabled() == true
         then
-            SkillUp.NoteCultAttempt({ seedUid = seedUid })
+            Rates.NoteCultAttempt({ seedUid = seedUid })
         end
     end
     return done(true)
@@ -1455,8 +1456,9 @@ function Grow.WakeAfterHarvest(plotNum, opts)
     end
     -- Extend Cult skill-up pending window after harvest (skill may tick then).
     -- extendOnly: do not start a new attempt if plant-arm pending expired.
-    local SkillUp = StockPiler4.SkillUp
-    if SkillUp and SkillUp.NoteCultAttempt and SkillUp.IsCultEnabled and SkillUp.IsCultEnabled() then
+    local Rates = StockPiler4.SkillRates
+    local Gates = StockPiler4.SkillUpGates
+    if Rates and Rates.NoteCultAttempt and Gates and Gates.IsCultEnabled and Gates.IsCultEnabled() then
         local seedUid = 0
         local Garden = StockPiler4.Garden
         if Garden and Garden.GetPlot then
@@ -1471,7 +1473,7 @@ function Grow.WakeAfterHarvest(plotNum, opts)
                 end
             end
         end
-        SkillUp.NoteCultAttempt({ seedUid = seedUid, extendOnly = true })
+        Rates.NoteCultAttempt({ seedUid = seedUid, extendOnly = true })
     end
     LogOnce(
         "harvest-wake-" .. tostring(plotNum or 0),

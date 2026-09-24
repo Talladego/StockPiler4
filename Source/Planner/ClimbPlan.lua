@@ -670,10 +670,11 @@ function CP.WatchesAllowUpgradeClimb()
     if CP.IsEnabled() ~= true then
         return false
     end
-    local SkillUp = StockPiler4.SkillUp
-    if SkillUp and SkillUp.WatchesDone then
-        return SkillUp.WatchesDone() == true
+    local Gates = StockPiler4.SkillUpGates
+    if Gates and Gates.WatchesDone then
+        return Gates.WatchesDone() == true
     end
+
     local Watch = StockPiler4.Watch
     if Watch and Watch.AllEnabledPotionWatchesStocked
         and Watch.AllEnabledPotionWatchesStocked() ~= true

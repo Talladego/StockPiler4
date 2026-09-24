@@ -943,16 +943,17 @@ function Refine.ShouldAllowRefineNow()
             end
         end
         if plantable then
-            local SkillUp = StockPiler4.SkillUp
-            -- SkillUp: refine higher plant or buffer-fill plants before replanting.
-            if SkillUp and SkillUp.PreferRefineOverPlant
-                and SkillUp.PreferRefineOverPlant() == true
+            local CSP = StockPiler4.CultSkillPlan
+            -- Cult SkillUp: refine higher plant or buffer-fill plants before replanting.
+            if CSP and CSP.PreferRefineOverPlant
+                and CSP.PreferRefineOverPlant() == true
             then
-                if SkillUp.HasUpgradePlant and SkillUp.HasUpgradePlant() == true then
+                if CSP.HasUpgradePlant and CSP.HasUpgradePlant() == true then
                     return true, "skill-up-upgrade"
                 end
                 return true, "skill-up-refine"
             end
+
             if bufferPending then
                 if plantReason == "potion_stock" or plantReason == "seed_buffer" then
                     return false, "plant-first"
@@ -995,10 +996,12 @@ function Refine.CollectIntents(opts)
         -- Rate-limit: unbounded rebuilds here caused ~300-450ms spikes every AutoGrow
         -- tick while plots grew with a short seed buffer + leftover refinable plants.
         if #Refine._intentCache == 0 then
-            local SkillUp = StockPiler4.SkillUp
-            local skillUpPending = SkillUp and SkillUp.ShouldCultPlant
-                and SkillUp.ShouldCultPlant() == true
-                and SkillUp.HasRefinablePlants and SkillUp.HasRefinablePlants() == true
+            local Gates = StockPiler4.SkillUpGates
+            local CSP = StockPiler4.CultSkillPlan
+            local skillUpPending = Gates and Gates.ShouldCultPlant
+                and Gates.ShouldCultPlant() == true
+                and CSP and CSP.HasRefinablePlants and CSP.HasRefinablePlants() == true
+
             local wantBust = Refine.HasPendingBufferRefine() == true
                 or skillUpPending == true
                 or Refine._refineDirtyReason == "harvest"
@@ -1074,19 +1077,21 @@ function Refine.CollectIntents(opts)
         end)
     end
 
-    -- 1c) SkillUp Cult: refine plants back to seeds to fill empty plots.
-    local SkillUp = StockPiler4.SkillUp
-    if SkillUp and SkillUp.AppendRefineIntents then
-        SkillUp.AppendRefineIntents(intents, function(line, reason, uses, budget)
+    -- 1c) Cult SkillUp: refine plants back to seeds to fill empty plots.
+    local CSP = StockPiler4.CultSkillPlan
+    if CSP and CSP.AppendRefineIntents then
+        CSP.AppendRefineIntents(intents, function(line, reason, uses, budget)
             AppendIntent(intents, line, reason, uses, budget)
         end)
     end
-    -- 1d) SkillUp Apo: refine brew-main surplus into Arboreal Resin when resin-short.
-    if SkillUp and SkillUp.AppendApoResinRefineIntents then
-        SkillUp.AppendApoResinRefineIntents(intents, function(line, reason, uses, budget)
+    -- 1d) Apo SkillUp: refine brew-main surplus into Arboreal Resin when resin-short.
+    local ASP = StockPiler4.ApoSkillPlan
+    if ASP and ASP.AppendApoResinRefineIntents then
+        ASP.AppendApoResinRefineIntents(intents, function(line, reason, uses, budget)
             AppendIntent(intents, line, reason, uses, budget)
         end)
     end
+
 
     -- 2) Plant-need (prefer PlanSnapshot / opts demand — avoid WarmHave rebuild on orch tick)
     do

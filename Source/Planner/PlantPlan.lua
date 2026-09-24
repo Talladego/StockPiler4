@@ -1282,9 +1282,10 @@ function PlantPlan.PickPlantJob(opts)
     end
 
     -- Idle SkillUp Cult: only after watches are done (SkillUp.ShouldCultPlant gates).
-    local SkillUp = StockPiler4.SkillUp
-    if SkillUp and SkillUp.ShouldCultPlant and SkillUp.ShouldCultPlant() == true then
-        local job = SkillUp.PickPlantJob and SkillUp.PickPlantJob()
+    local Gates = StockPiler4.SkillUpGates
+    local CSP = StockPiler4.CultSkillPlan
+    if Gates and Gates.ShouldCultPlant and Gates.ShouldCultPlant() == true then
+        local job = CSP and CSP.PickPlantJob and CSP.PickPlantJob()
         if type(job) == "table" and (tonumber(job.seedUid) or 0) > 0 then
             LogPlantPick(job)
             return done(job)
@@ -1292,8 +1293,8 @@ function PlantPlan.PickPlantJob(opts)
         if StockPiler4.Refine and StockPiler4.Refine.MarkRefineDue then
             StockPiler4.Refine.MarkRefineDue("skill-up")
         end
-        if SkillUp.MaybeNotifyStall then
-            SkillUp.MaybeNotifyStall()
+        if CSP and CSP.MaybeNotifyStall then
+            CSP.MaybeNotifyStall()
         end
     end
     return done(nil)

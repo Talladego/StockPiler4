@@ -254,13 +254,14 @@ function Bridge.OnTradeSkillUpdated()
             Bridge._skillPrev = nil
             return
         end
-        local SkillUp = StockPiler4.SkillUp
-        if dCult > 0 and SkillUp and SkillUp.OnCultSkillDelta then
-            SkillUp.OnCultSkillDelta(dCult)
+        local Rates = StockPiler4.SkillRates
+        if dCult > 0 and Rates and Rates.OnCultSkillDelta then
+            Rates.OnCultSkillDelta(dCult)
         end
-        if dApo > 0 and SkillUp and SkillUp.OnApoSkillDelta then
-            SkillUp.OnApoSkillDelta(dApo)
+        if dApo > 0 and Rates and Rates.OnApoSkillDelta then
+            Rates.OnApoSkillDelta(dApo)
         end
+
     end
 
     if hashChanged or firstSkillsReady then

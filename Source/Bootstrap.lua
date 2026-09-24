@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler4 = StockPiler4 or {}
-StockPiler4.Version = L"0.4.21"
+StockPiler4.Version = L"0.4.22"
 
 local function T(key, tokens)
     return StockPiler4.Util.T(key, tokens)
@@ -151,8 +151,8 @@ local function DumpAll()
     end
 
     section("skillplan")
-    if StockPiler4.SkillUp and StockPiler4.SkillUp.DumpSkillPlan then
-        StockPiler4.SkillUp.DumpSkillPlan(emit)
+    if StockPiler4.CultSkillPlan and StockPiler4.CultSkillPlan.DumpSkillPlan then
+        StockPiler4.CultSkillPlan.DumpSkillPlan(emit)
     else
         emit("skillplan| dump unavailable")
     end
@@ -299,9 +299,9 @@ function StockPiler4.OnSlash(input)
         return
     end
     if lower == "skillplan" then
-        local SkillUp = StockPiler4.SkillUp
-        if SkillUp and SkillUp.DumpSkillPlan then
-            SkillUp.DumpSkillPlan(function(msg) EmitLog(msg) end)
+        local CSP = StockPiler4.CultSkillPlan
+        if CSP and CSP.DumpSkillPlan then
+            CSP.DumpSkillPlan(function(msg) EmitLog(msg) end)
             Print(T("boot.skillplan_dumped"))
         else
             EmitLog("skillplan| dump unavailable")
@@ -342,8 +342,8 @@ function StockPiler4.OnSlash(input)
         return
     end
     if lower == "stats clear" or lower == "clearstats" then
-        local SkillUp = StockPiler4.SkillUp
-        if SkillUp and SkillUp.ClearRates and SkillUp.ClearRates() then
+        local Rates = StockPiler4.SkillRates
+        if Rates and Rates.ClearRates and Rates.ClearRates() then
             EmitLog("stats| skill-up rates cleared")
             Print(T("boot.stats_cleared"))
         else
