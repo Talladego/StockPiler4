@@ -1,7 +1,9 @@
 ----------------------------------------------------------------
 -- StockPiler4 Core/Scheduler -- coalesce heavy work, frame budgets
--- UPDATE_PROCESSED pump: bag flush -> PlanRebuild -> Watch UI (one heavy).
--- Orch tick on interval. Bag/plan coalesce via PLAN_DEBOUNCE_SEC storm window.
+-- UPDATE_PROCESSED pump: bag flush -> FrameWork.Pump -> PlanRebuild
+-- -> Watch UI (one heavy). Orch tick on interval.
+-- Controlled prewarm (WarmHave/Demand/SeedLines) with snapGen tokens;
+-- hold PlanRebuild/Watch while IsPrewarmBusy (no AutoGrow/Watch desync).
 -- Wake vs snap: only wake forces plant-queue invalidate.
 ----------------------------------------------------------------
 
@@ -31,10 +33,13 @@ Sch._bagNeedQueue = false
 Sch._planDue = false
 Sch._planAt = 0
 Sch._lastPlanBuiltAt = 0
+Sch._planWarmHoldAt = 0
 Sch._autoAccum = 0
 Sch._autoGrowFast = true
 Sch._suppressInvTicks = 0
 Sch._pendingAfterSuppress = { bagFlush = false, bagQueue = false, plan = false }
+Sch._pendingPrewarmAfterQuiet = false
+Sch._pendingPrewarmReason = nil
 Sch._initialized = false
 Sch._harvestStormUntil = 0
 Sch._plantQuietUntil = 0
@@ -86,6 +91,59 @@ local function PipelineDebounceActive()
     return now < untilT
 end
 
+--- Enqueue FrameWork prewarm jobs (WarmHave collect/bag, Demand, SeedLines).
+--- Deferred during plant quiet / harvest storm — never bag-walk under CultivationUpdated.
+local function RequestCachePrewarm(reason)
+    if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
+        Sch._pendingPrewarmAfterQuiet = true
+        Sch._pendingPrewarmReason = reason
+        return
+    end
+    if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+        Sch._pendingPrewarmAfterQuiet = true
+        Sch._pendingPrewarmReason = reason
+        return
+    end
+    local FW = StockPiler4.FrameWork
+    if not FW or not FW.StartOnce then
+        return
+    end
+    local snapGen = 0
+    if StockPiler4.Inventory and StockPiler4.Inventory.GetSnapGen then
+        snapGen = tonumber(StockPiler4.Inventory.GetSnapGen()) or 0
+    end
+    local genKey = tostring(snapGen) .. ":" .. tostring(reason or "")
+    if FW.EnqueueWarmHave then
+        FW.EnqueueWarmHave(genKey)
+    end
+    if FW.EnqueueDemand then
+        FW.EnqueueDemand(genKey)
+    end
+    if FW.EnqueueSeedLines then
+        FW.EnqueueSeedLines(genKey)
+    end
+end
+
+local function FlushPendingPrewarmAfterQuiet()
+    if Sch._pendingPrewarmAfterQuiet ~= true then
+        return
+    end
+    if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
+        return
+    end
+    if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+        return
+    end
+    Sch._pendingPrewarmAfterQuiet = false
+    local reason = Sch._pendingPrewarmReason or "quiet-end"
+    Sch._pendingPrewarmReason = nil
+    local Planner = StockPiler4.Planner
+    if Planner and Planner.InvalidateHaveCacheAfterQuiet then
+        Planner.InvalidateHaveCacheAfterQuiet()
+    end
+    RequestCachePrewarm(reason)
+end
+
 local function DecaySuppressInventorySideEffects()
     local n = tonumber(Sch._suppressInvTicks) or 0
     if n <= 0 then
@@ -124,6 +182,14 @@ local function FlushBagIfDue()
     if Sch._bagDue ~= true then
         return false
     end
+    if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
+        Sch._bagAt = Now() + Sch.BAG_COALESCE_SEC
+        return false
+    end
+    if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+        Sch._bagAt = Now() + Sch.BAG_COALESCE_SEC
+        return false
+    end
     if Now() < (tonumber(Sch._bagAt) or 0) then
         return false
     end
@@ -146,11 +212,21 @@ local function FlushBagIfDue()
     if needQueue then
         Sch.EnqueuePlanRebuild()
     end
+    RequestCachePrewarm("bag-flush")
     return true
 end
 
 local function RebuildPlanIfDue()
     if Sch._planDue ~= true then
+        return false
+    end
+    if Sch.SkipPlanThisFrameActive and Sch.SkipPlanThisFrameActive() == true then
+        return false
+    end
+    if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
+        return false
+    end
+    if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
         return false
     end
     local Orch = StockPiler4.Orchestrator
@@ -168,6 +244,34 @@ local function RebuildPlanIfDue()
         return false
     end
     local Planner = StockPiler4.Planner
+    local FW = StockPiler4.FrameWork
+    -- Hold full rebuild while FrameWork prewarm is mid-flight (collect/bag/demand/seeds).
+    if FW and FW.IsPrewarmBusy and FW.IsPrewarmBusy() == true then
+        return false
+    end
+    if FW and FW.Busy and FW.Busy() == true then
+        return false
+    end
+    -- Hold full rebuild until WarmHave prewarm finishes (never publish partial plan).
+    if Planner and Planner.CanCheapOrGardenPatch and Planner.CanCheapOrGardenPatch() ~= true then
+        local warm = Planner.IsHaveCacheWarmForSnap and Planner.IsHaveCacheWarmForSnap() == true
+        if not warm then
+            RequestCachePrewarm("plan-hold-warm")
+            if FW and FW.IsPrewarmBusy and FW.IsPrewarmBusy() == true then
+                return false
+            end
+            local holdMax = tonumber(Sch.PLAN_WARM_HOLD_MAX_SEC) or 3.0
+            local holdStart = tonumber(Sch._planWarmHoldAt) or 0
+            if holdStart <= 0 then
+                Sch._planWarmHoldAt = Now()
+                holdStart = Sch._planWarmHoldAt
+            end
+            if (Now() - holdStart) < holdMax then
+                return false
+            end
+        end
+    end
+    Sch._planWarmHoldAt = 0
     Sch._planDue = false
     Sch._planAt = 0
     Sch._lastPlanBuiltAt = Now()
@@ -191,7 +295,23 @@ local function FlushWatchUiIfDue(didHeavy)
     if didHeavy == true then
         return false
     end
+    if Sch.SkipUiThisFrameActive and Sch.SkipUiThisFrameActive() == true then
+        return false
+    end
     if Sch.IsSessionSettling and Sch.IsSessionSettling() == true then
+        return false
+    end
+    if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
+        return false
+    end
+    if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+        return false
+    end
+    local FW = StockPiler4.FrameWork
+    if FW and FW.IsPrewarmBusy and FW.IsPrewarmBusy() == true then
+        return false
+    end
+    if FW and FW.Busy and FW.Busy() == true then
         return false
     end
     local Ui = StockPiler4.Ui
@@ -442,7 +562,7 @@ function Sch.IsHarvestStorm()
     if now >= untilT then
         Sch._harvestStormUntil = 0
         -- Storm end: skip plan+UI this frame; enqueue coalesced rebuild for later.
-        -- Do not InvalidatePlantQueue / prewarm here (that piled WarmHave + Build
+        -- Do not InvalidatePlantQueue here (that piled WarmHave + Build
         -- + Watch flush into the first post-harvest / replant hitch).
         Sch.SkipPlanThisFrame()
         Sch.SkipUiThisFrame()
@@ -450,6 +570,7 @@ function Sch.IsHarvestStorm()
             Sch.EnqueuePlanRebuild({ nudge = true })
         end
         Sch.MarkWatchUiDirty()
+        FlushPendingPrewarmAfterQuiet()
     end
     return false
 end
@@ -465,6 +586,7 @@ function Sch.IsPlantQuiet()
     end
     if now >= untilT then
         Sch._plantQuietUntil = 0
+        FlushPendingPrewarmAfterQuiet()
     end
     return false
 end
@@ -796,10 +918,22 @@ function Sch.OnUpdate(timeElapsed)
     if FlushBagIfDue() then
         didHeavy = true
     end
+    local Orch = StockPiler4.Orchestrator
+    local brewSession = Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true
+    local skip = SkipFlags()
+    local skipPump = brewSession
+        or skip.plan == true
+        or (Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true)
+        or (Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
+    if not didHeavy and not skipPump
+        and StockPiler4.FrameWork and StockPiler4.FrameWork.Pump
+        and StockPiler4.FrameWork.Pump() == true
+    then
+        didHeavy = true
+    end
     if not didHeavy and RebuildPlanIfDue() then
         didHeavy = true
     end
-    local skip = SkipFlags()
     skip.plan = false
     FlushWatchUiIfDue(didHeavy)
     skip.ui = false

@@ -22,6 +22,8 @@ Refine._emptyIntentBustAt = 0
 Refine._bufferFlags = nil
 Refine._bufferFlagsKey = nil
 Refine._bufferFlagsStructKey = nil
+Refine._bufferFlagsSticky = nil
+Refine._bufferFlagsStickyStruct = nil
 Refine._pendingByPlant = Refine._pendingByPlant or {}
 Refine._pendingSeedByPlant = Refine._pendingSeedByPlant or {}
 Refine._issuedSeedThisTick = nil
@@ -509,17 +511,24 @@ local function EnsureBufferFlagsCached()
             return Refine._bufferFlags
         end
     end
-    -- Plant quiet / harvest storm: reuse structural flags (avoid snapGen rebuild
-    -- every Inv.ApplySlots during replant/refine — libperf BufferFlags trails).
+    -- Plant quiet / harvest storm: reuse structural or sticky flags (avoid snapGen
+    -- rebuild every Inv.ApplySlots / orch tick — libperf BufferFlags trails).
     local Sch = StockPiler4.Scheduler
     local quiet = Sch and (
         (Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true)
         or (Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
     )
-    if quiet and type(Refine._bufferFlags) == "table" then
-        local structKey = BufferFlagsStructuralKey()
-        if Refine._bufferFlagsStructKey == structKey then
-            return Refine._bufferFlags
+    if quiet then
+        if type(Refine._bufferFlags) == "table" then
+            local structKey = BufferFlagsStructuralKey()
+            if Refine._bufferFlagsStructKey == structKey
+                or Refine._bufferFlagsStructKey ~= nil
+            then
+                return Refine._bufferFlags
+            end
+        end
+        if type(Refine._bufferFlagsSticky) == "table" then
+            return Refine._bufferFlagsSticky
         end
     end
     local key = BufferFlagsCacheKey()
@@ -547,6 +556,8 @@ local function EnsureBufferFlagsCached()
     Refine._bufferFlags = { pending = pending, short = short }
     Refine._bufferFlagsKey = key
     Refine._bufferFlagsStructKey = BufferFlagsStructuralKey()
+    Refine._bufferFlagsSticky = Refine._bufferFlags
+    Refine._bufferFlagsStickyStruct = Refine._bufferFlagsStructKey
     if Perf and Perf.End then
         Perf.End("Refine.BufferFlags")
     end
@@ -623,6 +634,10 @@ function Refine.InvalidateIntentCache()
 end
 
 function Refine.InvalidateBufferFlags()
+    if type(Refine._bufferFlags) == "table" then
+        Refine._bufferFlagsSticky = Refine._bufferFlags
+        Refine._bufferFlagsStickyStruct = Refine._bufferFlagsStructKey
+    end
     Refine._bufferFlagsKey = nil
     Refine._bufferFlags = nil
     Refine._bufferFlagsStructKey = nil

@@ -1,7 +1,7 @@
 # StockPiler4 Architecture Coverage
 
 **Scope:** Intended architecture from design docs vs live addon at `Interface/AddOns/StockPiler4`  
-**Reviewed:** 2026-09-24 · Live version **0.4.31** (`StockPiler4.mod`)  
+**Reviewed:** 2026-09-24 · Live version **0.4.32** (`StockPiler4.mod`)  
 **Sources of intent:** `REFACTORING_RECOMMENDATIONS.md`, `IMPLEMENTATION_PLAN.md`, `FRAME_SLICING.md`, `ACCEPTANCE.md`, `CODE_QUALITY_REVIEW.md`, `README.md`  
 **Not a target:** `FEATURE_COVERAGE.md`
 
@@ -11,8 +11,8 @@
 
 | Status | Count |
 | :--- | ---: |
-| Implemented | 21 |
-| Partial | 5 |
+| Implemented | 22 |
+| Partial | 4 |
 | Missing | 0 |
 | **Total architectural targets** | **26** |
 
@@ -48,9 +48,9 @@
 | RefinePipeline ExpireStuck | **Implemented** | — | — |
 | Inventory static wipe + ByRole | **Implemented** | — | — |
 | Strict read-only PlanSnapshot | **Implemented** | Clone-then-Replace | — |
-| FrameWork bag→plan gone; 50ms debounce | **Implemented** | — | — |
-| Strip Scheduler suppression flags | **Partial** | `_pendingAfterSuppress` + `_skipThisFrame` | Storm/quiet remain (cult safety) |
-| Catalog-only time-slicing | **Partial** | Plant list cached by knowledge gen; stock-only tab refresh; bag→plan gone | Generic FW remains |
+| Controlled FrameWork prewarm (WarmHave/Demand/SeedLines) + quiet/storm hold | **Implemented** | `FrameWork` + `Scheduler.RequestCachePrewarm`; see `FRAME_SLICING.md` | — |
+| Strip Scheduler suppression flags | **Partial** | `_pendingAfterSuppress` + `_skipThisFrame` + `_pendingPrewarmAfterQuiet` | Storm/quiet remain (cult safety) |
+| Catalog browse vs bag→plan slicing | **Implemented** | Plants cache by know gen; bag→plan uses bounded FW prewarm only | — |
 
 ---
 

@@ -56,6 +56,61 @@ local function ItemRarityNameColor(itemData)
     return StockPiler4.ViewList.ItemRarityNameColor(itemData)
 end
 
+--- Resolve bag/DB sample so Plants-tab names get tier tint (cached catalog
+--- shells often omit rarity after ListPlantEntries cache hits).
+local function EnsurePlantNameRarityColors(plant)
+    if type(plant) ~= "table" then
+        return 255, 255, 255
+    end
+    local itemData = plant.itemData
+    local uid = tonumber(plant.plantUid) or 0
+    local needResolve = type(itemData) ~= "table"
+        or (tonumber(itemData.rarity) or 0) <= 0
+    if (tonumber(plant.rarity) or 0) > 0 and type(itemData) == "table"
+        and (tonumber(itemData.rarity) or 0) <= 0
+    then
+        itemData.rarity = plant.rarity
+        needResolve = false
+    end
+    if needResolve and StockPiler4.Inventory and uid > 0 then
+        if StockPiler4.Inventory.GetSample then
+            local sample = StockPiler4.Inventory.GetSample(uid)
+            if type(sample) == "table" then
+                if type(itemData) ~= "table" then
+                    itemData = sample
+                else
+                    if (tonumber(sample.rarity) or 0) > 0 then
+                        itemData.rarity = sample.rarity
+                    end
+                    if sample.name ~= nil and (itemData.name == nil or itemData.name == L"") then
+                        itemData.name = sample.name
+                    end
+                end
+                plant.itemData = itemData
+            end
+        end
+        if StockPiler4.Inventory.ResolvePotionItemData then
+            itemData = StockPiler4.Inventory.ResolvePotionItemData(
+                plant.plantKey,
+                uid,
+                itemData
+            )
+            if type(itemData) == "table" then
+                plant.itemData = itemData
+            end
+        end
+    end
+    itemData = plant.itemData
+    if type(itemData) == "table" and (tonumber(itemData.rarity) or 0) <= 0
+        and (tonumber(plant.rarity) or 0) > 0
+    then
+        itemData.rarity = plant.rarity
+    end
+    local nameR, nameG, nameB = ItemRarityNameColor(itemData)
+    plant.nameR, plant.nameG, plant.nameB = nameR, nameG, nameB
+    return nameR, nameG, nameB
+end
+
 local function FormatSignedStat(n)
     return StockPiler4.ViewList.FormatSignedStat(n, { zeroAsDash = true })
 end
@@ -308,7 +363,7 @@ local function BuildVisibleList(opts)
             local superCritNum = tonumber(plant.superCrit) or 0
             local levelNum = tonumber(plant.apoLevel) or 0
             local stockW = towstring(tostring(have))
-            local nameR, nameG, nameB = ItemRarityNameColor(plant.itemData)
+            local nameR, nameG, nameB = EnsurePlantNameRarityColors(plant)
             rows[#rows + 1] = {
                 id = plantKey,
                 plantKey = plantKey,

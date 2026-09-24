@@ -1,110 +1,82 @@
-Viewed FrameWork.lua:1-250
-Viewed FrameWork.lua:251-335
-Ran command: `Select-String -Path "Source\*.lua","Source\**\*.lua" -Pattern "FrameWork" | ForEach-Object { $_.Path.Split("\")[-1] + ":" + $_.LineNumber + " -> " + $_.Line.Trim() }`
-Viewed Planner.lua:4080-4120
-Ran command: `Select-String -Path "Source\Planner\Planner.lua" -Pattern "function BeginWarmHaveSlice" -Context 0,35`
+# Frame slicing policy (StockPiler4)
 
-## Analysis: The Frame Slicing Pattern in `FrameWork`
+## Goal
 
-In [`Source/Core/FrameWork.lua`](file:///c:/Games/Return%20of%20Reckoning/Interface/AddOns/StockPiler4/Source/Core/FrameWork.lua), the frame-slicing pattern implements a cooperative, time-sliced background job queue. 
+Cut plant / additive / harvest FPS spikes without AutoGrow↔Watch desync.
+Quiet/coalesce alone (0.4.31) was not enough; libperf still showed
+`PlanRebuild`+`Build.WarmHave`, `Refine.BufferFlags`+`Grow.TryAdditive`, and
+`Footer`/`RefreshWatch` trails. StockPiler3 largely eliminated these with
+**controlled FrameWork prewarm**. 0.4.32 restores that pattern under strict
+safety rules.
 
-**Executive Assessment:** In StockPiler4, `FrameWork` is an **architectural band-aid that treats symptoms rather than the root cause**. It successfully avoids single-frame micro-hitches, but does so at the cost of **asynchronous state inconsistency, UI latency, and massive scheduling complexity**.
+## Architecture
 
----
-
-### 1. The Rationale: Why It Was Introduced
-In Warhammer Online's single-threaded Lua 5.1 environment, running heavy operations on a single frame causes perceptible hitching (>50–100ms) or stutter (>250ms).
-
-During a harvest or bag storm, the addon historically tried to do all of the following in one frame:
-1. Re-index 80+ bag slots.
-2. Collect and parse specs for all watched recipes.
-3. Walk bags for non-bound item matching (fingerprinting).
-4. Run multi-bottle demand balancing.
-5. Re-render 30+ complex XML watch list rows.
-
-`FrameWork` sliced this pipeline across multiple frames:
-- **Frame $N$:** UID count pass (`BeginWarmHaveSlice`)
-- **Frame $N+1$:** Backpack spec scan pass (`FinishWarmHaveSlice`)
-- **Frame $N+2$:** Demand calculation (`EnqueueDemand`)
-- **Frame $N+3$:** Seed lines calculation (`EnqueueSeedLines`)
-- **Frame $N+4$:** Full plan rebuild (`PlanRebuild`)
-- **Frame $N+5$:** Watch list paint
-
-On paper, spreading ~60ms of work across 6 frames (~10ms/frame at 60 FPS) prevents frame spikes.
-
----
-
-### 2. The Failure Modes in Practice
-
-While the pattern kept frame times low on synthetic benchmarks, it introduced critical secondary problems:
-
-#### A. Temporal Desync & State Tearing
-Because calculations are spread across 5–8 frames (~80–130ms), **game state changes while the calculation is in-flight**:
-- Between Frame $N$ and Frame $N+3$, an item is harvested, consumed, or moved.
-- Frame $N+3$ finishes calculating demand based on bag data from Frame $N$, creating an invalid plan.
-- To prevent this, the code added complex cancellation hooks (`FW.Cancel`, `snapGen` guards), which abort the job mid-way and restart it from Frame 0.
-
-#### B. The "Perpetual Delay" / UI Stagnation
-To keep the UI consistent, [`Scheduler.lua`](file:///c:/Games/Return%20of%20Reckoning/Interface/AddOns/StockPiler4/Source/Core/Scheduler.lua#L217) explicitly **holds the full plan rebuild and Watch UI paint** while `FW.IsPrewarmBusy()` is true:
-```lua
--- Hold full rebuild while FrameWork prewarm is mid-flight (collect/bag/demand/seeds).
-if FW and FW.IsPrewarmBusy and FW.IsPrewarmBusy() == true then
-    return
-end
 ```
-During active gameplay (rapid planting, harvesting, or buying), events fire continuously. `FrameWork` jobs keep getting re-enqueued or delayed by "quiet periods" (`plantQuiet`, `harvestStorm`). **The result is that the Watch tab and macro tooltips freeze on stale data (e.g. `craftable = 0` or `Restocking`) for 3 to 5 seconds after items are already in the bags.**
+UPDATE_PROCESSED
+  → bag flush (coalesced; deferred in plant quiet / harvest storm)
+  → FrameWork.Pump  (≤1 prewarm step / frame)
+  → PlanRebuild     (held while IsPrewarmBusy)
+  → Watch UI flush  (held while IsPrewarmBusy / quiet / storm)
+  → Orchestrator.Tick (not on the same frame as heavy work)
+```
 
-#### C. Excessive Coordination Code
-Because `FrameWork` is asynchronous, the rest of the addon had to build dozens of flags to accommodate it:
-- [`Scheduler.lua`](file:///c:/Games/Return%20of%20Reckoning/Interface/AddOns/StockPiler4/Source/Core/Scheduler.lua) has ~15 suppression variables (`_pendingPrewarmAfterQuiet`, `_skipPlanThisFrame`, `_skipUiHoldFooter`).
-- Domain executors like [`Buy.lua`](file:///c:/Games/Return%20of%20Reckoning/Interface/AddOns/StockPiler4/Source/Buy.lua) and [`Brew.lua`](file:///c:/Games/Return%20of%20Reckoning/Interface/AddOns/StockPiler4/Source/Brew.lua) bypass the scheduler and mutate `PlanSnapshot.Get().rows` directly because waiting for `FrameWork` to finish slicing takes too long.
+### Prewarm jobs (FrameWork)
 
----
-
-### 3. Root Cause vs. Symptom: Why Slicing Was Unnecessary
-
-The only reason `FrameWork` was needed is that **StockPiler4's data structures are unindexed and perform redundant linear scans**:
-
-1. **Unindexed Spec Matching:** Instead of indexing backpack items once into a lookup table, [`Planner.lua`](file:///c:/Games/Return%20of%20Reckoning/Interface/AddOns/StockPiler4/Source/Planner/Planner.lua) repeatedly performs full slot iterations to match material specs.
-2. **GC Allocations in Loops:** In [`InventoryStore.lua`](file:///c:/Games/Return%20of%20Reckoning/Interface/AddOns/StockPiler4/Source/Stores/InventoryStore.lua#L80-L100), `RebuildFromBags` re-allocates 4 nested tables on every bag event. The perceived "hitch" was often garbage collection pauses, not pure CPU execution time.
-3. **Expensive Demand Balancing:** Demand was recalculated from scratch rather than updated incrementally.
-
-**Math in perspective:**
-- A standard player has ~80 bag slots and tracks ~10–20 watched recipes.
-- If bag items are indexed into a hash map by `{ [role_effect_tier] = count }` in a single $O(N)$ pass, matching all 20 watches takes **under 1.5 milliseconds**.
-- **Slicing a 1.5ms operation across 5 frames with a 335-line state machine makes no sense.**
-
----
-
-### 4. Recommendation for StockPiler4
-
-| Strategy | StockPiler4 Approach | Recommended StockPiler4 Design |
+| Job id | Resume / step | Purpose |
 | :--- | :--- | :--- |
-| **Bag Processing** | Linear scan, multi-frame slice | **Single-pass indexed table (`wipe`)** (~0.5ms) |
-| **Planning Execution** | Spread across 4 prewarm jobs | **Synchronous pure plan calculation** (~1ms) |
-| **Storm Handling** | FrameWork job queue + Quiet timers | **Simple Debounce / Coalesce window (e.g. 50ms)** |
-| **UI Updates** | Gated on `FW.IsPrewarmBusy()` | **Direct render from immutable snapshot** |
+| `prewarm-warm-have` | collect → bag (2 frames) | WarmHave slice: CountByUid then bag walk |
+| `prewarm-demand` | StartOnce | `BuildBalancedSpecDemand({ cacheOnly })` |
+| `prewarm-seed-lines` | StartOnce | `CollectAutoGrowSeedLines` cache |
 
-#### Concrete Architecture in StockPiler4:
-1. **Drop `FrameWork.lua` from the core planning loop entirely.**
-2. **Replace Slicing with Coalescing (Debouncing):**
-   - When a harvest storm fires 4 `BAG_UPDATE` events within 50ms, do not slice. Reset a 50ms coalesce timer.
-   - When the 50ms timer expires, execute the entire pipeline synchronously:
-     $$\text{Index Bags (0.5ms)} \longrightarrow \text{Compute Plan (1.0ms)} \longrightarrow \text{Publish Snapshot}$$
-   - Total frame cost: **~1.5ms** (well within the 16.6ms budget for 60 FPS).
-3. **Reserve Time-Slicing Only for Catalog Browsing:**
-   - The *only* legitimate use for frame-slicing in RoR is populating an unindexed catalog of 500+ items or recipes when opening a search window for the first time. It should never sit between bag events and the craft macro readiness loop.
+- **Budget:** `DEFAULT_FRAME_BUDGET = 1` — at most one job step per Pump.
+- **Resume token:** `gen = snapGen:reason`. Same id+gen no-ops (no mid-flight mutation).
+- **Ownership:** only `Scheduler.RequestCachePrewarm` enqueues; `FrameWork.Pump` drains.
+- **Never slice** engine craft APIs (`PlantSeed` / `BuyItem` / `PerformCrafting`).
 
----
+### Quiet / storm gates
 
-### 5. Practice update (0.4.31 plant / additive / harvest soak)
-
-**Decision:** Do **not** reintroduce FrameWork slicing for CultivationUpdated / plant / additive / harvest spikes. Libperf trails (`Footer`+`RefreshWatch`+`CultivationUpdated` x4, `Orch`+`BufferFlags`+`CollectIntents`) were addressed with coalesce / quiet / peek:
-
-| Spike | Non-slicing mitigation |
+| Gate | Effect |
 | :--- | :--- |
-| CultivationUpdated x4 + Footer/RefreshWatch | Extend `ArmPlantQuiet` while plant/additive pending; skip Footer dirty while quiet |
-| Additive mid-grow WakeAutoGrow | Quiet + SkipPlan/Ui; `SetAutoGrowIdle(false)` only (no plant-queue invalidate) |
-| Orch plant then BufferFlags/CollectIntents | Drop post-plant `WakeAutoGrow`; orch peeks BufferFlags cache |
+| `IsPlantQuiet` / `IsHarvestStorm` | Skip Pump; defer bag flush; hold PlanRebuild + Watch; latch `_pendingPrewarmAfterQuiet` |
+| Quiet / storm end | `FlushPendingPrewarmAfterQuiet` → invalidate have-cache after quiet → `RequestCachePrewarm` |
+| `SkipPlanThisFrame` | Hold PlanRebuild + Pump this frame |
+| `IsPrewarmBusy` | Hold PlanRebuild + Watch until collect/bag/demand/seeds finish |
 
-**Safety boundary:** Quiet holds Watch paint and plan rebuild for ~2s after plant/additive commits. AutoGrow still runs additives on the 1s tick (`SetAutoGrowIdle(false)`). Harvest still uses `ArmHarvestStorm`. Craftable / plantIntent correctness is not deferred across quiet — only UI flush and full PlanRebuild.
+### BufferFlags during quiet
+
+`InvalidateBufferFlags` keeps a **sticky** last-good table. While quiet/storm,
+`EnsureBufferFlagsCached` reuses live or sticky flags instead of rebuilding
+(avoids `CollectAutoGrowSeedLines` under CultivationUpdated / additive).
+
+## Safety rules (deterministic, clear ownership)
+
+1. **No mid-plan mutation.** Prewarm jobs never write `PlanSnapshot`. Publish only in `Planner.GetOrBuild` after prewarm completes (or warm-hold timeout).
+2. **Stable resume tokens.** Replacing a job requires a new `snapGen:reason`. In-flight slice with matching gen is left alone.
+3. **Hold Watch while busy.** Never Flatten/RefreshWatch on the same frame as WarmHave bag walk or PlanRebuild.
+4. **Defer under CultivationUpdated.** Plant quiet and harvest storm never run WarmHave/Demand bag work; prewarm is queued for quiet-end.
+5. **AutoGrow ownership unchanged.** Orch still plants/additives from `PlanSnapshot` / garden state. Quiet holds UI+plan only; `SetAutoGrowIdle(false)` keeps the 1s additive tick. Do not `InvalidatePlantQueue` from snap or storm-end.
+6. **Warm-hold cap.** If Have cache stays cold, `PLAN_WARM_HOLD_MAX_SEC` (3s) allows a cold PlanRebuild so Watch cannot stall forever.
+7. **One heavy per frame.** Bag flush OR Pump OR PlanRebuild OR Orch — never stack.
+
+## What we still do *not* slice
+
+- Catalog browse / Plants list build (separate cache; rarity resolve is O(1) sample).
+- Engine craft / plant / harvest APIs.
+- Orch intent issue (`IssueOne`) — quiet + BufferFlags sticky instead.
+
+## Libperf expectations (0.4.32)
+
+| Former spike | Mitigation |
+| :--- | :--- |
+| `PlanRebuild` + `Build.WarmHave` / `WarmHave.miss` | WarmHave sliced across Pump frames; PlanRebuild held until warm |
+| `Refine.BufferFlags` + `Grow.TryAdditive` | SeedLines prewarm + sticky BufferFlags under quiet |
+| `Footer` / `RefreshWatch` under CultivationUpdated | Quiet holds Watch; SkipUi after PlanRebuild |
+| Sync `Build.Demand` on PlanRebuild | Demand prewarm (`cacheOnly`) before rebuild |
+
+## Retest notes
+
+1. Enable libperf (`/sp4 perf` or prior soak path). Plant → soil/water/nutrient → harvest cycle with AutoGrow on.
+2. Expect FrameWork.Pump marks across quiet-end frames; PlanRebuild should not share a frame with WarmHave bag.
+3. Spikes over ~250ms on `BufferFlags`+`TryAdditive` / `Build.WarmHave` should drop vs 0.4.31 soak.
+4. Watch craftable / plantIntent must catch up within ~3s after quiet (warm-hold), not freeze indefinitely.
+5. Plants tab: names show tier colors (green/blue/purple/orange) again — not uniform light grey.

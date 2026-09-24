@@ -645,6 +645,9 @@ function Catalog.ListPlantEntries(opts)
                     if (tonumber(itemData.iconNum) or 0) <= 0 and (tonumber(db.iconNum) or 0) > 0 then
                         itemData.iconNum = db.iconNum
                     end
+                    if (tonumber(itemData.rarity) or 0) <= 0 and (tonumber(db.rarity) or 0) > 0 then
+                        itemData.rarity = db.rarity
+                    end
                     if not ItemDataHasCraftBonuses(itemData) and ItemDataHasCraftBonuses(db) then
                         itemData.craftingBonus = db.craftingBonus
                     end
