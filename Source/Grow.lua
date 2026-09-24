@@ -501,6 +501,12 @@ function Grow.InvalidatePlantQueue(opts)
     Grow._plantQueueDirty = true
     Grow._cachedPlantJob = nil
     Grow._plantJobProbed = false
+    local PP = StockPiler4.PlantPlan
+    if PP then
+        PP._pickMemoKey = nil
+        PP._pickMemoJob = nil
+        PP._pickMemoProbed = false
+    end
     local US = StockPiler4.UpgradeSeed
     if US and US.InvalidateUpgradeTargetsCache then
         US.InvalidateUpgradeTargetsCache()
@@ -1053,17 +1059,30 @@ end
 function Grow.CanHarvestNow()
     -- Op-lock: button must grey; PrepareHarvest alone returned false while lit.
     if Grow.IsHarvestOpActive() then
+        Grow._canHarvestCacheKey = nil
         return false
     end
     if StockPiler4.Brew and StockPiler4.Brew.BlocksHarvest and StockPiler4.Brew.BlocksHarvest() == true then
+        Grow._canHarvestCacheKey = nil
         return false
     end
     local Caps = StockPiler4.TradeSkillCaps
     if Caps and Caps.CanAutoGrow and Caps.CanAutoGrow() ~= true then
+        Grow._canHarvestCacheKey = nil
         return false
     end
+    local Garden = StockPiler4.Garden
+    local gardenGen = Garden and (Garden.GetPlanGen and Garden.GetPlanGen()
+        or Garden.GetGen and Garden.GetGen()) or 0
+    local key = tostring(gardenGen)
+    if Grow._canHarvestCacheKey == key and Grow._canHarvestCached ~= nil then
+        return Grow._canHarvestCached == true
+    end
     local ready = GetReadyHarvestPlots()
-    return #ready > 0
+    local ok = #ready > 0
+    Grow._canHarvestCacheKey = key
+    Grow._canHarvestCached = ok
+    return ok
 end
 
 --- True when every planted plot is grown (empty ignored). Mid-batch stays lit without re-chime.

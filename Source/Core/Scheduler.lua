@@ -19,9 +19,9 @@ Sch.SESSION_SETTLE_SEC = 2.5
 Sch.AUTO_TICK_SEC = 1.0
 Sch.AUTO_TICK_IDLE_SEC = 5.0
 Sch.HARVEST_STORM_MIN_SEC = 1.5
--- Cover plant/refine inventory + CultivationUpdated lag (0.75 left WarmHave
--- miss storms between IssueOne and the next orch tick).
-Sch.PLANT_QUIET_BASE_SEC = 1.25
+-- Cover plant/refine inventory + CultivationUpdated lag. 1.25 still left
+-- BufferFlags/Demand rebuilds between IssueOne and the next orch tick (libperf).
+Sch.PLANT_QUIET_BASE_SEC = 2.0
 Sch.PLAN_DEBOUNCE_SEC = 0.05
 
 Sch._bagDue = false
@@ -297,9 +297,11 @@ local function OnInventorySnapshot()
                 end
             end
         end
-    end
-    if Refine and Refine.InvalidateBufferFlags then
-        Refine.InvalidateBufferFlags()
+        -- BufferFlags only when not quiet/storm — snap invalidates during
+        -- plant/refine forced BufferFlags rebuild every orch tick (libperf).
+        if Refine and Refine.InvalidateBufferFlags then
+            Refine.InvalidateBufferFlags()
+        end
     end
     Sch.MarkWatchUiDirty()
 end

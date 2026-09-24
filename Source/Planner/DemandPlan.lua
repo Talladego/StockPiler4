@@ -520,8 +520,8 @@ local function BuildBalancedSpecDemand(opts)
 
     local Planner = PlannerRef()
 
-    -- Demand is watch/plan structural. Do not key on bag snapGen — every
-    -- Inv.ApplySlots during plant/refine forced a ~270ms rebuild (libperf).
+    -- Demand is watch-structural only. CheapRebuild/GardenPatch bump planGen
+    -- every orch tick — keying on planGen re-forced ~270ms rebuilds (libperf).
     local Watch = StockPiler4.Watch
 
     local watchGen = Watch and Watch.GetGen and Watch.GetGen() or 0
@@ -530,9 +530,28 @@ local function BuildBalancedSpecDemand(opts)
 
     local plan = PS and PS.Get and PS.Get() or nil
 
-    local planGen = type(plan) == "table" and tonumber(plan.planGen) or 0
+    local cacheKey = tostring(watchGen)
 
-    local cacheKey = tostring(watchGen) .. ":" .. tostring(planGen)
+    -- Prefer immutable snapshot demand when watch set matches.
+    if type(plan) == "table" and type(plan.demand) == "table" then
+
+        local planWatch = type(plan.ctx) == "table" and (tonumber(plan.ctx.watchGen) or 0) or 0
+
+        if planWatch == 0 or planWatch == watchGen then
+
+            if Planner then
+
+                Planner._demandCache = plan.demand
+
+                Planner._demandCacheKey = cacheKey
+
+            end
+
+            return plan.demand
+
+        end
+
+    end
 
     if Planner and type(Planner._demandCache) == "table" and Planner._demandCacheKey == cacheKey then
 
@@ -542,15 +561,7 @@ local function BuildBalancedSpecDemand(opts)
 
     if Planner and HoldHaveCacheQuiet() and type(Planner._demandCache) == "table" then
 
-        local prev = tostring(Planner._demandCacheKey or "")
-
-        local prefix = tostring(watchGen) .. ":"
-
-        if string.sub(prev, 1, string.len(prefix)) == prefix then
-
-            return Planner._demandCache
-
-        end
+        return Planner._demandCache
 
     end
 

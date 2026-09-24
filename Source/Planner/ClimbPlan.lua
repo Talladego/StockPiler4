@@ -929,9 +929,17 @@ local function CollectUpgradeTargets()
         }
     end
 
-    -- Potion / balanced demand (growable mats short).
-    local DP = StockPiler4.DemandPlan
-    local demand = DP and DP.Build and DP.Build() or nil
+    -- Potion / balanced demand (growable mats short). Prefer plan.demand.
+    local demand = nil
+    local PS = StockPiler4.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    if type(plan) == "table" and type(plan.demand) == "table" then
+        demand = plan.demand
+    end
+    if type(demand) ~= "table" then
+        local DP = StockPiler4.DemandPlan
+        demand = DP and DP.Build and DP.Build() or nil
+    end
     if type(demand) == "table" then
         for _, row in pairs(demand) do
             if type(row) == "table" and type(row.spec) == "table" then
@@ -982,22 +990,19 @@ local function CollectUpgradeTargets()
 end
 
 local function UpgradeTargetsCacheKey()
-    local Inv = StockPiler4.Inventory
     local Watch = StockPiler4.Watch
-    local snapGen = 0
     local watchGen = 0
-    if Inv and Inv.GetSnapGen then
-        snapGen = tonumber(Inv.GetSnapGen()) or 0
-    end
     if Watch and Watch.GetGen then
         watchGen = tonumber(Watch.GetGen()) or 0
     end
+    -- Structural climb targets (which specs). Bag snapGen must not bust this —
+    -- every Inv.ApplySlots rebuilt CollectUpgradeTargets + DP.Build (libperf).
     -- Cult floor gates ClimbCap; include so skill-ups invalidate without bag churn.
     local cult = 0
     if CP.GetCultSkill then
         cult = math.floor((tonumber(CP.GetCultSkill()) or 0) / 25)
     end
-    return tostring(snapGen) .. ":" .. tostring(watchGen) .. ":" .. tostring(cult)
+    return tostring(watchGen) .. ":" .. tostring(cult)
         .. ":" .. tostring(CP.IsEnabled() == true)
         .. ":" .. tostring(CP.WatchesAllowUpgradeClimb() == true)
 end

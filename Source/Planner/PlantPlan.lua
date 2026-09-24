@@ -1126,11 +1126,26 @@ end
 
 function PlantPlan.PickPlantJob(opts)
     opts = type(opts) == "table" and opts or {}
+    -- Same-frame / same-gen memo: CheapRebuild + Orch + UpgradeSeed re-entered
+    -- PickPlantCandidate x3–x4 per cult storm (libperf).
+    local Watch = StockPiler4.Watch
+    local Garden = StockPiler4.Garden
+    local watchGen = Watch and Watch.GetGen and Watch.GetGen() or 0
+    local gardenGen = Garden and (Garden.GetPlanGen and Garden.GetPlanGen()
+        or Garden.GetGen and Garden.GetGen()) or 0
+    local memoKey = tostring(watchGen) .. ":" .. tostring(gardenGen)
+        .. ":" .. tostring(opts.demand ~= nil)
+    if PlantPlan._pickMemoKey == memoKey and PlantPlan._pickMemoProbed == true then
+        return PlantPlan._pickMemoJob
+    end
     local Perf = StockPiler4.Perf
     if Perf and Perf.Begin then
         Perf.Begin("PickPlantCandidate")
     end
     local function done(job)
+        PlantPlan._pickMemoKey = memoKey
+        PlantPlan._pickMemoJob = job
+        PlantPlan._pickMemoProbed = true
         if Perf and Perf.End then
             Perf.End("PickPlantCandidate")
         end
@@ -1243,11 +1258,11 @@ function PlantPlan.PickPlantJob(opts)
         return done(nil)
     end
 
-    local Watch = StockPiler4.Watch
+    local WatchBuf = StockPiler4.Watch
     local lines = {}
     local focusGap = maxGap
     local PlannerMod = StockPiler4.Planner
-    if Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true
+    if WatchBuf and WatchBuf.IsSeedBufferEnabled and WatchBuf.IsSeedBufferEnabled() == true
         and PlannerMod and PlannerMod.CollectAutoGrowSeedLines
     then
         lines = PlannerMod.CollectAutoGrowSeedLines() or {}
