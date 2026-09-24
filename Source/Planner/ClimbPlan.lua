@@ -43,11 +43,6 @@ function CP.SetEnabled(enabled)
 end
 
 function CP.GetCultSkill()
-    -- SkillUp owns the Caps facade; fall back if SkillUp is unavailable.
-    local SkillUp = StockPiler4.SkillUp
-    if SkillUp and SkillUp.GetCultSkill then
-        return tonumber(SkillUp.GetCultSkill()) or 0
-    end
     local Caps = StockPiler4.TradeSkillCaps
     if Caps and Caps.GetCultSkill then
         return tonumber(Caps.GetCultSkill()) or 0

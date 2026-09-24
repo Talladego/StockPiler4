@@ -63,7 +63,7 @@ local ROLE_PICK_ORDER = {
 ----------------------------------------------------------------
 
 local function NowSec()
-    return StockPiler4.Util and StockPiler4.Util.NowSec and StockPiler4.Util.NowSec() or 0
+    return StockPiler4.Util.NowSec()
 end
 
 local function LogGrow(msg)
@@ -997,11 +997,12 @@ local function NudgeHarvestReadiness()
         or (Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true)
         or (Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
         or (Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true)
-    if Sch and Sch.RequestFooterRefresh then
+    local Bus = StockPiler4.EventBus
+    if Bus and Bus.FireFooterDirty then
         if hold then
-            Sch.RequestFooterRefresh()
+            Bus.FireFooterDirty()
         else
-            Sch.RequestFooterRefresh({ immediate = true })
+            Bus.FireFooterDirty({ immediate = true })
         end
     end
     if hold then
@@ -1141,15 +1142,15 @@ function Grow.MaybeNotifyHarvestReady()
         or (Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
         or (Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true)
     local function NudgeFooter(forceImmediate)
-        local SchFooter = StockPiler4.Scheduler
-        if not SchFooter or not SchFooter.RequestFooterRefresh then
+        local Bus = StockPiler4.EventBus
+        if not Bus or not Bus.FireFooterDirty then
             return
         end
         if holdFooter or forceImmediate ~= true then
-            SchFooter.RequestFooterRefresh()
+            Bus.FireFooterDirty()
             return
         end
-        SchFooter.RequestFooterRefresh({ immediate = true })
+        Bus.FireFooterDirty({ immediate = true })
     end
     -- Enable Harvest as soon as any plot is harvestable (not only all-planted latch).
     if canHarvest then

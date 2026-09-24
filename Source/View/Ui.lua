@@ -396,6 +396,9 @@ function Ui.RegisterEventRefresh()
     if E.FOOTER_DIRTY then
         track(B.Subscribe(E.FOOTER_DIRTY, OnFooterDirty))
     end
+    if E.WATCH_UI_DIRTY then
+        track(B.Subscribe(E.WATCH_UI_DIRTY, markDirty))
+    end
     if E.KNOWLEDGE_UPDATED then
         track(B.Subscribe(E.KNOWLEDGE_UPDATED, function()
             -- Knowledge can land after an inventory flush already painted Potions.

@@ -57,8 +57,8 @@ local function PerfMark(name)
     end
 end
 
-local function ToNarrow(v)
-    return StockPiler4.Util.ToNarrow(v)
+local function ToNarrow(value)
+    return StockPiler4.Util.ToNarrow(value)
 end
 
 local function RecipeSpec()
@@ -3584,14 +3584,13 @@ local function PatchWatchRowsLiveCounts(rows, opts)
             end
         end
         if beforeReady ~= afterReady then
-            local Sch = StockPiler4.Scheduler
-            if Sch and Sch.RequestFooterRefresh then
-                Sch.RequestFooterRefresh()
-            end
-            local B = StockPiler4.EventBus
+            local Bus = StockPiler4.EventBus
             local E = StockPiler4.Events
-            if B and B.Fire and E and E.CRAFT_READY_CHANGED then
-                B.Fire(E.CRAFT_READY_CHANGED, { ready = afterReady == true })
+            if Bus and Bus.FireFooterDirty then
+                Bus.FireFooterDirty()
+            end
+            if Bus and Bus.Fire and E and E.CRAFT_READY_CHANGED then
+                Bus.Fire(E.CRAFT_READY_CHANGED, { ready = afterReady == true })
             end
         end
         if Brew and Brew.MaybeNotifyBrewReady then
@@ -3614,9 +3613,9 @@ local function PatchWatchRowsLiveCounts(rows, opts)
         if BrewLive and BrewLive.InvalidateCanBrewCache then
             BrewLive.InvalidateCanBrewCache()
         end
-        local SchProp = StockPiler4.Scheduler
-        if SchProp and SchProp.RequestFooterRefresh then
-            SchProp.RequestFooterRefresh()
+        local BusProp = StockPiler4.EventBus
+        if BusProp and BusProp.FireFooterDirty then
+            BusProp.FireFooterDirty()
         end
     end
     if StockPiler4.Grow and StockPiler4.Grow.MaybeNotifyAutoGrowStall then

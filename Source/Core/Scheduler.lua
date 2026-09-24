@@ -609,6 +609,11 @@ function Sch.IsPlanRebuildPending()
 end
 
 function Sch.MarkWatchUiDirty()
+    local B = StockPiler4.EventBus
+    if B and B.FireWatchUiDirty then
+        B.FireWatchUiDirty()
+        return
+    end
     local Ui = StockPiler4.Ui
     if Ui and Ui.MarkWatchUiDirty then
         Ui.MarkWatchUiDirty()
@@ -617,6 +622,10 @@ end
 
 function Sch.RequestFooterRefresh(payload)
     local B = StockPiler4.EventBus
+    if B and B.FireFooterDirty then
+        B.FireFooterDirty(payload)
+        return
+    end
     local E = StockPiler4.Events
     if B and B.Fire and E and E.FOOTER_DIRTY then
         B.Fire(E.FOOTER_DIRTY, type(payload) == "table" and payload or {})

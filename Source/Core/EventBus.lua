@@ -26,6 +26,7 @@ StockPiler4.Events = StockPiler4.Events or {
     VENDOR_UPDATED = "sp4.vendor.updated",
     CRAFT_READY_CHANGED = "sp4.craft.ready",
     FOOTER_DIRTY = "sp4.footer.dirty",
+    WATCH_UI_DIRTY = "sp4.watch.ui.dirty",
 }
 
 function Bus.Subscribe(eventName, fn)
@@ -78,6 +79,22 @@ function Bus.UnsubscribeAll(eventName)
         return
     end
     subs[tostring(eventName)] = nil
+end
+
+--- Domain modules publish footer readiness via EventBus (not Scheduler→Ui).
+function Bus.FireFooterDirty(payload)
+    local E = StockPiler4.Events
+    if E and E.FOOTER_DIRTY then
+        Bus.Fire(E.FOOTER_DIRTY, type(payload) == "table" and payload or {})
+    end
+end
+
+--- Domain modules mark Watch paint dirty via EventBus (View owns flush).
+function Bus.FireWatchUiDirty(payload)
+    local E = StockPiler4.Events
+    if E and E.WATCH_UI_DIRTY then
+        Bus.Fire(E.WATCH_UI_DIRTY, type(payload) == "table" and payload or {})
+    end
 end
 
 function Bus.Fire(eventName, payload)

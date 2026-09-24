@@ -50,7 +50,7 @@ local ROLE_LOAD_ORDER = {
 ----------------------------------------------------------------
 
 local function NowSec()
-    return StockPiler4.Util and StockPiler4.Util.NowSec and StockPiler4.Util.NowSec() or 0
+    return StockPiler4.Util.NowSec()
 end
 
 local function LogBrew(msg)
@@ -822,9 +822,9 @@ function Brew.AutoBrewBlockedReason()
 end
 
 local function RequestFooterRefresh(payload)
-    local Sch = StockPiler4.Scheduler
-    if Sch and Sch.RequestFooterRefresh then
-        Sch.RequestFooterRefresh(payload)
+    local Bus = StockPiler4.EventBus
+    if Bus and Bus.FireFooterDirty then
+        Bus.FireFooterDirty(payload)
     end
 end
 
@@ -832,9 +832,9 @@ end
 local function ForceBrewUiRefresh()
     Brew.InvalidateCanBrewCache()
     RequestFooterRefresh({ immediate = true, syncMacro = true })
-    local Sch = StockPiler4.Scheduler
-    if Sch and Sch.MarkWatchUiDirty then
-        Sch.MarkWatchUiDirty()
+    local Bus = StockPiler4.EventBus
+    if Bus and Bus.FireWatchUiDirty then
+        Bus.FireWatchUiDirty()
     end
 end
 

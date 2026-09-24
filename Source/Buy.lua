@@ -66,7 +66,7 @@ local function PlayerMoneyBrass()
 end
 
 local function NowSec()
-    return StockPiler4.Util and StockPiler4.Util.NowSec and StockPiler4.Util.NowSec() or 0
+    return StockPiler4.Util.NowSec()
 end
 
 local function BagCountUid(uid)
@@ -370,9 +370,9 @@ local function AccountConfirmedBuy(pending, liveMoney)
     if Watch and Watch.AddAutoBuySpentBrass then
         Watch.AddAutoBuySpentBrass(costTotal)
     end
-    local Sch = StockPiler4.Scheduler
-    if Sch and Sch.MarkWatchUiDirty then
-        Sch.MarkWatchUiDirty()
+    local Bus = StockPiler4.EventBus
+    if Bus and Bus.FireWatchUiDirty then
+        Bus.FireWatchUiDirty()
     end
     if StockPiler4TabWatch and StockPiler4TabWatch.RefreshAutoBuyMoneyUi then
         StockPiler4TabWatch.RefreshAutoBuyMoneyUi()
@@ -633,13 +633,12 @@ local function WakeBrewAfterBuyFill(reason)
     if Brew and Brew.MaybeNotifyBrewReady then
         Brew.MaybeNotifyBrewReady()
     end
-    if SchWake then
-        if SchWake.RequestFooterRefresh then
-            SchWake.RequestFooterRefresh()
-        end
-        if SchWake.MarkWatchUiDirty then
-            SchWake.MarkWatchUiDirty()
-        end
+    local Bus = StockPiler4.EventBus
+    if Bus and Bus.FireFooterDirty then
+        Bus.FireFooterDirty()
+    end
+    if Bus and Bus.FireWatchUiDirty then
+        Bus.FireWatchUiDirty()
     end
     LogBuy("wake-brew-after-fill reason=" .. reason)
 end
@@ -798,9 +797,9 @@ function Buy.ResetAllowanceSpent()
     Buy.ClearMoneyGateStop("reset-spent")
     Buy.InvalidateJobsCache()
     LogBuy("allowance-spent-reset")
-    local SchReset = StockPiler4.Scheduler
-    if SchReset and SchReset.MarkWatchUiDirty then
-        SchReset.MarkWatchUiDirty()
+    local Bus = StockPiler4.EventBus
+    if Bus and Bus.FireWatchUiDirty then
+        Bus.FireWatchUiDirty()
     end
     local VA = StockPiler4.VendorAdapter
     if VA and VA.IsStoreOpen and VA.IsStoreOpen() == true then

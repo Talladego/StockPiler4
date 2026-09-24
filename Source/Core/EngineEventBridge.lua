@@ -145,9 +145,9 @@ function Bridge.OnCraftingUpdated()
     if StockPiler4.Brew and StockPiler4.Brew.OnCraftingUpdated then
         StockPiler4.Brew.OnCraftingUpdated()
     end
-    local Sch = StockPiler4.Scheduler
-    if Sch and Sch.RequestFooterRefresh then
-        Sch.RequestFooterRefresh()
+    local Bus = StockPiler4.EventBus
+    if Bus and Bus.FireFooterDirty then
+        Bus.FireFooterDirty()
     end
 end
 
@@ -191,8 +191,9 @@ function Bridge.OnCultivationUpdated()
     local quiet = Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true
     local settling = Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true
     if not storm and not quiet and not settling then
-        if Sch and Sch.RequestFooterRefresh then
-            Sch.RequestFooterRefresh()
+        local Bus = StockPiler4.EventBus
+        if Bus and Bus.FireFooterDirty then
+            Bus.FireFooterDirty()
         end
     end
     if Grow and Grow.NeedsCurrentStageAdditive and Grow.NeedsCurrentStageAdditive()
@@ -283,9 +284,9 @@ function Bridge.OnTradeSkillUpdated()
         if StockPiler4TabPlants and StockPiler4TabPlants.UpdateRows then
             StockPiler4TabPlants.UpdateRows()
         end
-        local SchSkill = StockPiler4.Scheduler
-        if SchSkill and SchSkill.RequestFooterRefresh then
-            SchSkill.RequestFooterRefresh()
+        local Bus = StockPiler4.EventBus
+        if Bus and Bus.FireFooterDirty then
+            Bus.FireFooterDirty()
         end
         if firstSkillsReady and cult > 0
             and StockPiler4.Scheduler and StockPiler4.Scheduler.WakeAutoGrow
@@ -363,9 +364,9 @@ end
 
 function Bridge.OnCombatFlagUpdated()
     -- Light: combat pause is consulted on Orch plant path; dirty footer readiness only.
-    local Sch = StockPiler4.Scheduler
-    if Sch and Sch.RequestFooterRefresh then
-        Sch.RequestFooterRefresh()
+    local Bus = StockPiler4.EventBus
+    if Bus and Bus.FireFooterDirty then
+        Bus.FireFooterDirty()
     end
 end
 
