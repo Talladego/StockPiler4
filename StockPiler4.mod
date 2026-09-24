@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ModuleFile xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <UiMod name="StockPiler4" version="0.4.6" date="2026-09-24">
+    <UiMod name="StockPiler4" version="0.4.7" date="2026-09-24">
         <Author name="Talladego" email="" />
         <Description text="StockPiler4 - clean-core cult/apo stock automation. Parallel-safe with StockPiler3." />
         <VersionSettings gameVersion="1.4.8" windowsVersion="1.0" savedVariablesVersion="1.0" />
