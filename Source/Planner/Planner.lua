@@ -3674,6 +3674,59 @@ end
 -- Publish / cheap / garden / full build
 ----------------------------------------------------------------
 
+--- Shallow-clone plan + each row so cheap/garden patches never mutate the live
+--- PlanSnapshot object (replace-not-mutate via PublishPlan → PS.Set).
+local function ClonePlanForPatch(src)
+    if type(src) ~= "table" then
+        return nil
+    end
+    local plan = {}
+    for k, v in pairs(src) do
+        plan[k] = v
+    end
+    if type(src.ctx) == "table" then
+        local ctx = {}
+        for k, v in pairs(src.ctx) do
+            ctx[k] = v
+        end
+        plan.ctx = ctx
+    end
+    if type(src.rows) == "table" then
+        local rows = {}
+        for i = 1, #src.rows do
+            local row = src.rows[i]
+            if type(row) == "table" then
+                local copy = {}
+                for rk, rv in pairs(row) do
+                    copy[rk] = rv
+                end
+                -- Tip slot tables are mutated for growingNotes; clone entries too.
+                if type(copy.statusTipSlots) == "table" then
+                    local tips = {}
+                    for t = 1, #copy.statusTipSlots do
+                        local entry = copy.statusTipSlots[t]
+                        if type(entry) == "table" then
+                            local ec = {}
+                            for ek, ev in pairs(entry) do
+                                ec[ek] = ev
+                            end
+                            tips[t] = ec
+                        else
+                            tips[t] = entry
+                        end
+                    end
+                    copy.statusTipSlots = tips
+                end
+                rows[i] = copy
+            else
+                rows[i] = row
+            end
+        end
+        plan.rows = rows
+    end
+    return plan
+end
+
 local function PublishPlan(plan, key, meta)
     InvalidateFocusCaches()
     local PS = StockPiler4.PlanSnapshot
@@ -3760,20 +3813,25 @@ local function TryCheapRebuild()
         return nil
     end
     PerfBegin("Planner.CheapRebuild")
-    PatchWatchRowsLiveCounts(stale.rows, { syncSnapshot = false })
-    stale.seedBufferTipData = BuildSeedBufferTipData({
-        previous = stale.seedBufferTipData,
+    local plan = ClonePlanForPatch(stale)
+    if type(plan) ~= "table" then
+        PerfEnd("Planner.CheapRebuild")
+        return nil
+    end
+    PatchWatchRowsLiveCounts(plan.rows, { syncSnapshot = false })
+    plan.seedBufferTipData = BuildSeedBufferTipData({
+        previous = plan.seedBufferTipData,
     })
-    RefreshPlantRefineIntents(stale)
-    local key = RefreshStaleCtx(stale)
+    RefreshPlantRefineIntents(plan)
+    local key = RefreshStaleCtx(plan)
     local planGen = (tonumber(Planner._planGen) or 0) + 1
     Planner._planGen = planGen
-    stale.planGen = planGen
-    stale.cacheKey = key
-    stale.builtAt = (type(GetGameTime) == "function" and GetGameTime()) or 0
-    PublishPlan(stale, key, { cheap = true })
+    plan.planGen = planGen
+    plan.cacheKey = key
+    plan.builtAt = (type(GetGameTime) == "function" and GetGameTime()) or 0
+    PublishPlan(plan, key, { cheap = true })
     PerfEnd("Planner.CheapRebuild")
-    return stale
+    return plan
 end
 
 local function TryGardenPatch()
@@ -3790,16 +3848,21 @@ local function TryGardenPatch()
         return nil
     end
     PerfBegin("Planner.GardenPatch")
+    local plan = ClonePlanForPatch(stale)
+    if type(plan) ~= "table" then
+        PerfEnd("Planner.GardenPatch")
+        return nil
+    end
     -- Reuse tips; flip restocking via live overlay; live potion counts; no Tips/Demand.
-    PatchWatchRowsLiveCounts(stale.rows, {
+    PatchWatchRowsLiveCounts(plan.rows, {
         syncSnapshot = false,
         allowWarmHave = false,
     })
     -- cacheOnly growing notes when Grow provides them
     local Grow = StockPiler4.Grow
     if Grow and Grow.GrowingNotesForSpec then
-        for i = 1, #stale.rows do
-            local row = stale.rows[i]
+        for i = 1, #plan.rows do
+            local row = plan.rows[i]
             local tips = row and row.statusTipSlots
             if type(tips) == "table" then
                 for t = 1, #tips do
@@ -3814,16 +3877,16 @@ local function TryGardenPatch()
             end
         end
     end
-    RefreshPlantRefineIntents(stale)
-    local key = RefreshStaleCtx(stale)
+    RefreshPlantRefineIntents(plan)
+    local key = RefreshStaleCtx(plan)
     local planGen = (tonumber(Planner._planGen) or 0) + 1
     Planner._planGen = planGen
-    stale.planGen = planGen
-    stale.cacheKey = key
-    stale.builtAt = (type(GetGameTime) == "function" and GetGameTime()) or 0
-    PublishPlan(stale, key, { gardenPatch = true })
+    plan.planGen = planGen
+    plan.cacheKey = key
+    plan.builtAt = (type(GetGameTime) == "function" and GetGameTime()) or 0
+    PublishPlan(plan, key, { gardenPatch = true })
     PerfEnd("Planner.GardenPatch")
-    return stale
+    return plan
 end
 
 local function BuildFull(opts)
@@ -4175,20 +4238,24 @@ end
 function Planner.ReconcileAutoGrowStatusesNow(extraRows)
     local changed = false
     local PS = StockPiler4.PlanSnapshot
-    local plan = PS and PS.Get and PS.Get()
-    if type(plan) == "table" and type(plan.rows) == "table" then
-        if ReconcileAutoGrowStatusesForRows(plan.rows) then
-            changed = true
-        end
-        -- Armed set changed -> Shared contest membership must refresh.
-        if PolishSharedContest(plan.rows) then
-            changed = true
-        end
-        if RefreshSkillUpWatchRows(plan.rows, { syncSnapshot = true }) then
-            changed = true
+    local live = PS and PS.Get and PS.Get()
+    local plan = nil
+    if type(live) == "table" and type(live.rows) == "table" then
+        plan = ClonePlanForPatch(live)
+        if type(plan) == "table" and type(plan.rows) == "table" then
+            if ReconcileAutoGrowStatusesForRows(plan.rows) then
+                changed = true
+            end
+            -- Armed set changed -> Shared contest membership must refresh.
+            if PolishSharedContest(plan.rows) then
+                changed = true
+            end
+            if RefreshSkillUpWatchRows(plan.rows, { syncSnapshot = false }) then
+                changed = true
+            end
         end
     end
-    if type(extraRows) == "table" and extraRows ~= (plan and plan.rows) then
+    if type(extraRows) == "table" and extraRows ~= (live and live.rows) then
         if ReconcileAutoGrowStatusesForRows(extraRows) then
             changed = true
         end
@@ -4201,6 +4268,10 @@ function Planner.ReconcileAutoGrowStatusesNow(extraRows)
     end
     if changed then
         InvalidateFocusCaches()
+        if type(plan) == "table" and PS and PS.Set then
+            local key = plan.cacheKey or (PS.GetCacheKey and PS.GetCacheKey()) or nil
+            PS.Set(plan, key)
+        end
     end
     return changed
 end
