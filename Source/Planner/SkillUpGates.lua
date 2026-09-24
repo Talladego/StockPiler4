@@ -11,6 +11,10 @@ local function Caps()
     return StockPiler4.TradeSkillCaps
 end
 
+local function ClimbEconomy()
+    return StockPiler4.ClimbPlan or StockPiler4.UpgradeSeed
+end
+
 local function CharRow(create)
     local Watch = StockPiler4.Watch
     if Watch and Watch.CharacterRow then
