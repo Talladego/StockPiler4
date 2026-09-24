@@ -1,7 +1,7 @@
 # StockPiler4 Architecture Coverage
 
 **Scope:** Intended architecture from design docs vs live addon at `Interface/AddOns/StockPiler4`  
-**Reviewed:** 2026-09-24 · Live version **0.4.25** (`StockPiler4.mod`)  
+**Reviewed:** 2026-09-24 · Live version **0.4.26** (`StockPiler4.mod`)  
 **Sources of intent:** `REFACTORING_RECOMMENDATIONS.md`, `IMPLEMENTATION_PLAN.md`, `FRAME_SLICING.md`, `ACCEPTANCE.md`, `CODE_QUALITY_REVIEW.md`, `README.md`  
 **Not a target:** `FEATURE_COVERAGE.md`
 

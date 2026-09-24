@@ -767,8 +767,9 @@ function Catalog.ListPlantEntries()
         if type(effectKey) == "string" and effectKey ~= "" and RS and RS.NormalizeEffectKeyForUi then
             effectKey = RS.NormalizeEffectKeyForUi(effectKey) or effectKey
         end
-        -- Live fallback: seed map link -> seed EFFECT (before recipe / description).
-        if (not effectKey or effectKey == "") and SM and SM.ResolveSeedEffectId then
+        -- Seed grow-effect drives Effect when plant has no apo EFFECT
+        -- ("Grows Stimulant" / seed role — not a wrong family→Multiplier map).
+        if (not effectKey or effectKey == "") and SM then
             local seedUids = SM.GetSeedUidsForPlant and SM.GetSeedUidsForPlant(plantUid) or nil
             local bestSeed = seedUid
             if bestSeed <= 0 and SM.PickBestSeedUid and type(seedUids) == "table" then
@@ -778,14 +779,25 @@ function Catalog.ListPlantEntries()
                 bestSeed = tonumber(seedUids[1]) or 0
             end
             if bestSeed > 0 then
-                local fromSeed = tonumber(SM.ResolveSeedEffectId(bestSeed)) or 0
-                if fromSeed > 0 then
-                    effectId = fromSeed
-                    if MS and MS.EffectKeyFromEffectId then
-                        effectKey = MS.EffectKeyFromEffectId(fromSeed)
+                if SM.ResolveSeedGrowEffectKey then
+                    local fromSeedKey = SM.ResolveSeedGrowEffectKey(bestSeed)
+                    if type(fromSeedKey) == "string" and fromSeedKey ~= "" then
+                        effectKey = fromSeedKey
+                        if RS and RS.NormalizeEffectKeyForUi then
+                            effectKey = RS.NormalizeEffectKeyForUi(effectKey) or effectKey
+                        end
                     end
-                    if type(effectKey) == "string" and effectKey ~= "" and RS and RS.NormalizeEffectKeyForUi then
-                        effectKey = RS.NormalizeEffectKeyForUi(effectKey) or effectKey
+                end
+                if (not effectKey or effectKey == "") and SM.ResolveSeedEffectId then
+                    local fromSeed = tonumber(SM.ResolveSeedEffectId(bestSeed)) or 0
+                    if fromSeed > 0 then
+                        effectId = fromSeed
+                        if MS and MS.EffectKeyFromEffectId then
+                            effectKey = MS.EffectKeyFromEffectId(fromSeed)
+                        end
+                        if type(effectKey) == "string" and effectKey ~= "" and RS and RS.NormalizeEffectKeyForUi then
+                            effectKey = RS.NormalizeEffectKeyForUi(effectKey) or effectKey
+                        end
                     end
                 end
             end
@@ -816,14 +828,16 @@ function Catalog.ListPlantEntries()
                 effectKey = RS.NormalizeEffectKeyForUi(effectKey) or effectKey
             end
         end
-        -- Non-main plants have no apo EFFECT id; show stabilizer/extender/multiplier.
+        -- Non-main plants have no apo EFFECT id; show stabilizer/extender/multiplier/stimulant.
         if (not effectKey or effectKey == "") then
             local role = tostring(spec.role or "")
             if role == "stabilizer" or role == "goldweed" then
                 effectKey = "stabilizer"
             elseif role == "extender" then
                 effectKey = "extender"
-            elseif role == "multiplier" or role == "stimulant" then
+            elseif role == "stimulant" then
+                effectKey = "stimulant"
+            elseif role == "multiplier" then
                 effectKey = "multiplier"
             end
         end
