@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler4 = StockPiler4 or {}
-StockPiler4.Version = L"0.4.17"
+StockPiler4.Version = L"0.4.18"
 
 local function T(key, tokens)
     return StockPiler4.Util.T(key, tokens)
@@ -238,11 +238,11 @@ function StockPiler4.OnSlash(input)
         end
         return
     end
-    if lower == "debug" or lower == "debug on" then
+    if lower == "debug" or lower == "debug on" or lower == "on" then
         SetDebugEnabled(true)
         return
     end
-    if lower == "debug off" then
+    if lower == "debug off" or lower == "off" then
         SetDebugEnabled(false)
         return
     end
