@@ -679,6 +679,14 @@ function Inv.NormalizeItemDataForTooltip(itemData)
     if type(data.enhSlot) ~= "table" then
         data.enhSlot = {}
     end
+    -- CreateItemTooltip: `if customizedIconNum ~= 0` is true when the field is nil
+    -- (Lua nil ~= 0), then LabelSetText(AppearanceName, customizedIconName) rejects nil.
+    if tonumber(data.customizedIconNum) == nil then
+        data.customizedIconNum = 0
+    end
+    if data.customizedIconName == nil then
+        data.customizedIconName = L""
+    end
     return data
 end
 
