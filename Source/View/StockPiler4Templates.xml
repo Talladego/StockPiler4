@@ -446,11 +446,7 @@
                 <FullResizeImage name="$parentBackground" inherits="EA_FullResizeImage_TintableSolidBackground" layer="background" handleinput="false">
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft" />
-                        <!-- Inset for EA_ScrollBar_DefaultVerticalChain (~22–26px) so zebra
-                             does not paint over the scrollbar track. -->
-                        <Anchor point="bottomright" relativePoint="bottomright">
-                            <AbsPoint x="-28" y="0" />
-                        </Anchor>
+                        <Anchor point="bottomright" relativePoint="bottomright" />
                     </Anchors>
                 </FullResizeImage>
 

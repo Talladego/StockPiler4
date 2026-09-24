@@ -71,9 +71,9 @@ function StockPiler4TabWatch.PrimeRowChrome()
     if not DoesWindowExist("SP4TabWatchList") then
         return
     end
-    local numVisible = 10
+    local numVisible = 11
     if SP4TabWatchList and SP4TabWatchList.numVisibleRows then
-        numVisible = tonumber(SP4TabWatchList.numVisibleRows) or 10
+        numVisible = tonumber(SP4TabWatchList.numVisibleRows) or 11
     end
     local paintKeys = StockPiler4TabWatch._rowPaintKey
     for rowIndex = 1, numVisible do
