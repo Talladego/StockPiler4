@@ -3801,6 +3801,67 @@ local function RefreshPlantRefineIntents(stale)
     stale.refineIntents = refineIntent and { refineIntent } or {}
 end
 
+local function PlantIntentHasSeed(plan)
+    return type(plan) == "table" and type(plan.plantIntent) == "table"
+        and (tonumber(plan.plantIntent.seedUid) or 0) > 0
+end
+
+--- Republish current snapshot with fresh plant/refine intents (no full Build).
+--- Used when bags settle after reload while cache key still matches a nil-intent plan.
+function Planner.RefreshPlantRefineIntentsNow()
+    local PS = StockPiler4.PlanSnapshot
+    local stale = PS and PS.Get and PS.Get()
+    if type(stale) ~= "table" then
+        local Sch = StockPiler4.Scheduler
+        if Sch and Sch.EnqueuePlanRebuild then
+            Sch.EnqueuePlanRebuild({ nudge = true })
+        end
+        return false
+    end
+    local before = PlantIntentHasSeed(stale)
+    local plan = ClonePlanForPatch(stale)
+    if type(plan) ~= "table" then
+        return false
+    end
+    RefreshPlantRefineIntents(plan)
+    local after = PlantIntentHasSeed(plan)
+    local refineBeforeUid = type(stale.refineIntent) == "table"
+        and (tonumber(stale.refineIntent.uniqueID or stale.refineIntent.plantUid) or 0) or 0
+    local refineAfterUid = type(plan.refineIntent) == "table"
+        and (tonumber(plan.refineIntent.uniqueID or plan.refineIntent.plantUid) or 0) or 0
+    local beforeUid = before and (tonumber(stale.plantIntent.seedUid) or 0) or 0
+    local afterUid = after and (tonumber(plan.plantIntent.seedUid) or 0) or 0
+    if beforeUid == afterUid and refineBeforeUid == refineAfterUid then
+        return false
+    end
+    local key = RefreshStaleCtx(plan)
+    local planGen = (tonumber(Planner._planGen) or 0) + 1
+    Planner._planGen = planGen
+    plan.planGen = planGen
+    plan.cacheKey = key
+    plan.builtAt = (type(GetGameTime) == "function" and GetGameTime()) or 0
+    PublishPlan(plan, key, { intentRefresh = true })
+    return after == true or refineAfterUid > 0
+end
+
+--- True when AutoGrow has empty-plot work but snapshot plantIntent has no seed.
+function Planner.NeedsPlantIntentRefresh()
+    local Watch = StockPiler4.Watch
+    if not (Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() == true) then
+        return false
+    end
+    local Grow = StockPiler4.Grow
+    if not (Grow and Grow.HasEmptyPlot and Grow.HasEmptyPlot() == true) then
+        return false
+    end
+    local PS = StockPiler4.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    if type(plan) ~= "table" then
+        return true
+    end
+    return PlantIntentHasSeed(plan) ~= true
+end
+
 local function TryCheapRebuild()
     local PS = StockPiler4.PlanSnapshot
     local stale = PS and PS.Get and PS.Get()

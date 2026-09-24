@@ -282,6 +282,21 @@ local function OnInventorySnapshot()
         if hasPlantWork or ShouldWakeAutoGrowUrgent() then
             Sch._autoGrowFast = true
         end
+        -- Orch plants from PlanSnapshot.plantIntent only. Snap used to dirty the
+        -- Grow probe cache without refreshing the snapshot, so empty plots sat
+        -- idle until /sp4 dumpall force-Built a new plantIntent.
+        if hasPlantWork then
+            local Planner = StockPiler4.Planner
+            if Planner and Planner.NeedsPlantIntentRefresh
+                and Planner.NeedsPlantIntentRefresh() == true
+            then
+                if Planner.RefreshPlantRefineIntentsNow then
+                    Planner.RefreshPlantRefineIntentsNow()
+                elseif Sch.EnqueuePlanRebuild then
+                    Sch.EnqueuePlanRebuild({ nudge = true })
+                end
+            end
+        end
     end
     if Refine and Refine.InvalidateBufferFlags then
         Refine.InvalidateBufferFlags()
@@ -520,6 +535,7 @@ function Sch.BeginSessionSettle(seconds)
     if untilFrame > curFrame then
         Sch._sessionSettleUntilFrame = untilFrame
     end
+    Sch._sessionSettleArmed = true
 end
 
 function Sch.IsSessionSettling()
@@ -545,6 +561,34 @@ function Sch.IsSessionSettling()
     end
     Sch._sessionSettleUntil = 0
     return false
+end
+
+--- One-shot after reload settle: refresh plantIntent + wake AutoGrow so upgrade
+--- planting does not wait for /sp4 dumpall.
+local function MaybeFinishSessionSettle()
+    if Sch._sessionSettleArmed ~= true then
+        return
+    end
+    if Sch.IsSessionSettling() == true then
+        return
+    end
+    Sch._sessionSettleArmed = false
+    local Watch = StockPiler4.Watch
+    if not (Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() == true) then
+        return
+    end
+    local Planner = StockPiler4.Planner
+    if Planner and Planner.NeedsPlantIntentRefresh
+        and Planner.NeedsPlantIntentRefresh() == true
+        and Planner.RefreshPlantRefineIntentsNow
+    then
+        Planner.RefreshPlantRefineIntentsNow()
+    elseif Sch.EnqueuePlanRebuild then
+        Sch.EnqueuePlanRebuild({ nudge = true })
+    end
+    if Sch.WakeAutoGrow then
+        Sch.WakeAutoGrow()
+    end
 end
 
 function Sch.SkipUiHoldFooter()
@@ -744,6 +788,7 @@ function Sch.OnUpdate(timeElapsed)
     if Sch.IsPlantQuiet then
         Sch.IsPlantQuiet()
     end
+    MaybeFinishSessionSettle()
 
     local didHeavy = false
     if FlushBagIfDue() then

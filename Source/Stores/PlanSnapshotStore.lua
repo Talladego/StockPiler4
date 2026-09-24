@@ -111,6 +111,11 @@ function PS.GetOrBuild(refresh)
     then
         local key = Planner.CacheKeyFromGens()
         if key ~= nil and key == PS._cacheKey then
+            if Planner.NeedsPlantIntentRefresh and Planner.NeedsPlantIntentRefresh() == true
+                and Planner.RefreshPlantRefineIntentsNow
+            then
+                Planner.RefreshPlantRefineIntentsNow()
+            end
             return PS._plan
         end
     end

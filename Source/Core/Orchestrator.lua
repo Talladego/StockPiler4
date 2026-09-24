@@ -527,6 +527,22 @@ function Orch._TickBody()
             Sch.SetAutoGrowIdle(false)
         end
     elseif canPlant and not hasSeeds then
+        -- Reload/snap often leaves plantIntent nil while Grow cache is dirty;
+        -- refresh snapshot intents so upgrade planting does not wait for dumpall.
+        local Planner = StockPiler4.Planner
+        if Planner and Planner.NeedsPlantIntentRefresh
+            and Planner.NeedsPlantIntentRefresh() == true
+            and Planner.RefreshPlantRefineIntentsNow
+        then
+            Planner.RefreshPlantRefineIntentsNow()
+            hasSeeds = ProbePlantHasSeeds(Grow, usRefineFirst)
+            if hasSeeds and not holdHarvestBatch then
+                if TryExecutePlant(opId, { checkDefer = false }) then
+                    EndTick()
+                    return
+                end
+            end
+        end
         if HasPendingBufferRefine() or usRefineFirst then
             if not usRefineFirst and Orch._seedBufferRefineArmed ~= true
                 and StockPiler4.Refine and StockPiler4.Refine.MarkRefineDue
