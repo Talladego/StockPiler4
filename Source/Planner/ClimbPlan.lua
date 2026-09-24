@@ -906,7 +906,11 @@ local function CollectUpgradeTargets()
     end
 
     -- Potion / balanced demand (growable mats short).
-    local demand = RS and RS.BuildBalancedSpecDemand and RS.BuildBalancedSpecDemand() or nil
+    local DP = StockPiler4.DemandPlan
+    local demand = DP and DP.Build and DP.Build() or nil
+    if type(demand) ~= "table" and RS and RS.BuildBalancedSpecDemand then
+        demand = RS.BuildBalancedSpecDemand()
+    end
     if type(demand) == "table" then
         for _, row in pairs(demand) do
             if type(row) == "table" and type(row.spec) == "table" then

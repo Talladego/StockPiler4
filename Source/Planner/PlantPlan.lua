@@ -1167,8 +1167,6 @@ function PlantPlan.PickPlantJob(opts)
         local DP = StockPiler4.DemandPlan
         if DP and DP.Build then
             demand = DP.Build()
-        elseif RS.BuildBalancedSpecDemand then
-            demand = RS.BuildBalancedSpecDemand()
         end
     end
     local watches = CollectPlantWatchOrder(RS)

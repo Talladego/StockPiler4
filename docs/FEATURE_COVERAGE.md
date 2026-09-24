@@ -1,7 +1,7 @@
 # StockPiler4 Feature Coverage
 
 **Scope:** README.md intended features vs live addon at `Interface/AddOns/StockPiler4`  
-**Reviewed:** 2026-09-24 · Live version **0.4.18** (`StockPiler4.mod` / `Bootstrap.lua`) · README claims **0.4.18**  
+**Reviewed:** 2026-09-24 · Live version **0.4.20** (`StockPiler4.mod` / `Bootstrap.lua`) · README claims **0.4.18**  
 **Method:** README feature extraction → source/symbol evidence → status + gaps
 
 ---
@@ -10,8 +10,8 @@
 
 | Status | Count |
 | :--- | ---: |
-| Implemented | 22 |
-| Partial | 1 |
+| Implemented | 23 |
+| Partial | 0 |
 | Missing | 0 |
 | **Total intended features** | **23** |
 
