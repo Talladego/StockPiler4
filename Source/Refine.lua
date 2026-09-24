@@ -509,6 +509,19 @@ local function EnsureBufferFlagsCached()
             return Refine._bufferFlags
         end
     end
+    -- Plant quiet / harvest storm: reuse structural flags (avoid snapGen rebuild
+    -- every Inv.ApplySlots during replant/refine — libperf BufferFlags trails).
+    local Sch = StockPiler4.Scheduler
+    local quiet = Sch and (
+        (Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true)
+        or (Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
+    )
+    if quiet and type(Refine._bufferFlags) == "table" then
+        local structKey = BufferFlagsStructuralKey()
+        if Refine._bufferFlagsStructKey == structKey then
+            return Refine._bufferFlags
+        end
+    end
     local key = BufferFlagsCacheKey()
     if Refine._bufferFlagsKey == key and type(Refine._bufferFlags) == "table" then
         return Refine._bufferFlags

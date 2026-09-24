@@ -201,11 +201,73 @@ local function UpdateSortHeaders()
     )
 end
 
-local function BuildVisibleList()
+local function VisibleListBuildKey(s)
+    local knowGen = 0
+    if StockPiler4.Knowledge and StockPiler4.Knowledge.GetGen then
+        knowGen = tonumber(StockPiler4.Knowledge.GetGen()) or 0
+    end
+    local watchGen = 0
+    if StockPiler4.Watch and StockPiler4.Watch.GetGen then
+        watchGen = tonumber(StockPiler4.Watch.GetGen()) or 0
+    end
+    return table.concat({
+        tostring(knowGen),
+        tostring(watchGen),
+        tostring(s.plantNameFilter or ""),
+        tostring(s.plantEffectFilter or ""),
+        tostring(s.plantSortColumn or "name"),
+        tostring(s.plantSortAscending ~= false),
+    }, "|")
+end
+
+local function PatchVisibleListStocks()
+    local Catalog = StockPiler4.Catalog
+    local rows = StockPiler4TabPlants.listData
+    if type(rows) ~= "table" then
+        return false
+    end
+    for i = 1, #rows do
+        local row = rows[i]
+        if type(row) == "table" then
+            local have = 0
+            if Catalog and Catalog.PlantHave then
+                have = Catalog.PlantHave(row.plantUid)
+            end
+            row.have = have
+            local stockW = towstring(tostring(have))
+            row.stockText = stockW
+            row.yieldText = stockW
+        end
+    end
+    return true
+end
+
+local function BuildVisibleList(opts)
+    opts = type(opts) == "table" and opts or {}
     local s = GetSettings()
     if type(s) ~= "table" then
         return
     end
+    local buildKey = VisibleListBuildKey(s)
+    if opts.stocksOnly == true
+        and StockPiler4TabPlants._listBuildKey == buildKey
+        and type(StockPiler4TabPlants.listData) == "table"
+        and #StockPiler4TabPlants.listData > 0
+    then
+        PatchVisibleListStocks()
+        return
+    end
+    if opts.force ~= true
+        and opts.stocksOnly ~= true
+        and StockPiler4TabPlants._listBuildKey == buildKey
+        and type(StockPiler4TabPlants.listData) == "table"
+        and #StockPiler4TabPlants.listData > 0
+    then
+        -- Tab flip / UiFlush with unchanged filters: refresh stock counts only.
+        PatchVisibleListStocks()
+        return
+    end
+
     local nameFilter = string.lower(tostring(s.plantNameFilter or ""))
     local effectFilter = s.plantEffectFilter or ""
     local rows = {}
@@ -289,6 +351,7 @@ local function BuildVisibleList()
 
     SortRows(rows)
     StockPiler4TabPlants.listData = rows
+    StockPiler4TabPlants._listBuildKey = buildKey
     local order = {}
     for i = 1, #rows do
         order[i] = i
@@ -324,13 +387,23 @@ function StockPiler4TabPlants.Initialize()
     StockPiler4TabPlants.Refresh()
 end
 
-function StockPiler4TabPlants.Refresh()
+function StockPiler4TabPlants.Refresh(opts)
+    opts = type(opts) == "table" and opts or {}
     UpdateSortHeaders()
-    BuildVisibleList()
+    local stocksOnly = opts.stocksOnly == true
+    local prevKey = StockPiler4TabPlants._listBuildKey
+    BuildVisibleList(opts)
+    local keyChanged = prevKey ~= StockPiler4TabPlants._listBuildKey
     if DoesWindowExist("SP4TabPlantsList") then
-        ListBoxSetDisplayOrder("SP4TabPlantsList", {})
-        ListBoxSetDisplayOrder("SP4TabPlantsList", StockPiler4TabPlants.displayOrder)
-        StockPiler4TabPlants.UpdateRows()
+        -- Avoid empty→full ListBoxSetDisplayOrder on stock-only / warm-cache tab flips
+        -- (that alone hitch-painted ~700ms+ with RefreshWatch).
+        if stocksOnly == true or (keyChanged ~= true and prevKey ~= nil) then
+            StockPiler4TabPlants.UpdateRows()
+        else
+            ListBoxSetDisplayOrder("SP4TabPlantsList", {})
+            ListBoxSetDisplayOrder("SP4TabPlantsList", StockPiler4TabPlants.displayOrder)
+            StockPiler4TabPlants.UpdateRows()
+        end
     end
 end
 
@@ -352,15 +425,12 @@ function StockPiler4TabPlants.UpdateRows()
                     DefaultColor.SetListRowTint(rowName .. "Background", rowIndex, false)
                 end
                 if DoesWindowExist(rowName .. "Watch") then
-                    local blocked = data.watchBlocked == true
-                    if StockPiler4.Watch and StockPiler4.Watch.CanEnablePlantWatch then
-                        blocked = StockPiler4.Watch.CanEnablePlantWatch(data.plantKey) ~= true
-                        data.watchBlocked = blocked
-                    end
+                    -- Use build-time watchBlocked; re-querying CanEnablePlantWatch per
+                    -- visible row on every paint stacked with ListPlantEntries spikes.
                     StockPiler4.ViewList.PaintWatchCheckbox(
                         rowName .. "Watch",
                         data.watched == true,
-                        blocked
+                        data.watchBlocked == true
                     )
                 end
                 if DoesWindowExist(rowName .. "Icon") then
@@ -372,6 +442,9 @@ function StockPiler4TabPlants.UpdateRows()
                 end
                 if DoesWindowExist(rowName .. "Recipe") then
                     WindowSetShowing(rowName .. "Recipe", data.hasRecipes == true)
+                end
+                if DoesWindowExist(rowName .. "Yield") then
+                    LabelSetText(rowName .. "Yield", data.stockText or L"")
                 end
             else
                 WindowSetShowing(rowName, false)

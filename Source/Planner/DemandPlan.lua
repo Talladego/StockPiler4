@@ -520,8 +520,8 @@ local function BuildBalancedSpecDemand(opts)
 
     local Planner = PlannerRef()
 
-    local snapGen = CurrentSnapGen()
-
+    -- Demand is watch/plan structural. Do not key on bag snapGen — every
+    -- Inv.ApplySlots during plant/refine forced a ~270ms rebuild (libperf).
     local Watch = StockPiler4.Watch
 
     local watchGen = Watch and Watch.GetGen and Watch.GetGen() or 0
@@ -532,7 +532,7 @@ local function BuildBalancedSpecDemand(opts)
 
     local planGen = type(plan) == "table" and tonumber(plan.planGen) or 0
 
-    local cacheKey = tostring(snapGen) .. ":" .. tostring(watchGen) .. ":" .. tostring(planGen)
+    local cacheKey = tostring(watchGen) .. ":" .. tostring(planGen)
 
     if Planner and type(Planner._demandCache) == "table" and Planner._demandCacheKey == cacheKey then
 
@@ -544,13 +544,9 @@ local function BuildBalancedSpecDemand(opts)
 
         local prev = tostring(Planner._demandCacheKey or "")
 
-        local suffix = ":" .. tostring(watchGen) .. ":" .. tostring(planGen)
+        local prefix = tostring(watchGen) .. ":"
 
-        if string.len(prev) >= string.len(suffix)
-
-            and string.sub(prev, -string.len(suffix)) == suffix
-
-        then
+        if string.sub(prev, 1, string.len(prefix)) == prefix then
 
             return Planner._demandCache
 

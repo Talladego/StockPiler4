@@ -1,7 +1,7 @@
 # StockPiler4 Architecture Coverage
 
 **Scope:** Intended architecture from design docs vs live addon at `Interface/AddOns/StockPiler4`  
-**Reviewed:** 2026-09-24 · Live version **0.4.26** (`StockPiler4.mod`)  
+**Reviewed:** 2026-09-24 · Live version **0.4.27** (`StockPiler4.mod`)  
 **Sources of intent:** `REFACTORING_RECOMMENDATIONS.md`, `IMPLEMENTATION_PLAN.md`, `FRAME_SLICING.md`, `ACCEPTANCE.md`, `CODE_QUALITY_REVIEW.md`, `README.md`  
 **Not a target:** `FEATURE_COVERAGE.md`
 
@@ -50,7 +50,7 @@
 | Strict read-only PlanSnapshot | **Implemented** | Clone-then-Replace | — |
 | FrameWork bag→plan gone; 50ms debounce | **Implemented** | — | — |
 | Strip Scheduler suppression flags | **Partial** | `_pendingAfterSuppress` + `_skipThisFrame` | Storm/quiet remain (cult safety) |
-| Catalog-only time-slicing | **Partial** | Bag→plan gone | Generic FW remains |
+| Catalog-only time-slicing | **Partial** | Plant list cached by knowledge gen; stock-only tab refresh; bag→plan gone | Generic FW remains |
 
 ---
 

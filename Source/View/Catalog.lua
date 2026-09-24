@@ -381,7 +381,43 @@ local function ItemDataHasCraftBonuses(itemData)
     return false
 end
 
+-- Plant-tab Effect/recipe index is expensive (hydrate every recipe). Cache by
+-- knowledge gen — tab flips were rebuilding this every RefreshWatch (~700-900ms).
+local _plantRecipeIndex = nil
+local _plantRecipeIndexGen = -1
+local _plantEntries = nil
+local _plantEntriesGen = -1
+local _plantEntriesSnapGen = -1
+
+function Catalog.InvalidatePlantEntriesCache()
+    _plantRecipeIndex = nil
+    _plantRecipeIndexGen = -1
+    _plantEntries = nil
+    _plantEntriesGen = -1
+    _plantEntriesSnapGen = -1
+end
+
+local function KnowledgeGen()
+    local Know = StockPiler4.Knowledge
+    if Know and Know.GetGen then
+        return tonumber(Know.GetGen()) or 0
+    end
+    return 0
+end
+
+local function InventorySnapGen()
+    local Inv = StockPiler4.Inventory
+    if Inv and Inv.GetSnapGen then
+        return tonumber(Inv.GetSnapGen()) or 0
+    end
+    return 0
+end
+
 local function BuildPlantRecipeIndex()
+    local knowGen = KnowledgeGen()
+    if type(_plantRecipeIndex) == "table" and _plantRecipeIndexGen == knowGen then
+        return _plantRecipeIndex
+    end
     local byUid = {}
     local Know = StockPiler4.Knowledge
     local RS = StockPiler4.RecipeSpec
@@ -389,6 +425,8 @@ local function BuildPlantRecipeIndex()
     local recipes = Know and Know.Recipes and Know.Recipes() or nil
     local potions = Know and Know.Potions and Know.Potions() or nil
     if type(recipes) ~= "table" then
+        _plantRecipeIndex = byUid
+        _plantRecipeIndexGen = knowGen
         return byUid
     end
     local potionByOutcome = {}
@@ -475,11 +513,44 @@ local function BuildPlantRecipeIndex()
             end
         end
     end
+    _plantRecipeIndex = byUid
+    _plantRecipeIndexGen = knowGen
     return byUid
 end
 
+local function RefreshPlantEntryStocks(entries)
+    if type(entries) ~= "table" then
+        return entries
+    end
+    local Inv = StockPiler4.Inventory
+    for i = 1, #entries do
+        local plant = entries[i]
+        if type(plant) == "table" then
+            local uid = tonumber(plant.plantUid) or 0
+            if uid > 0 and Inv and Inv.CountByUid then
+                plant.have = tonumber(Inv.CountByUid(uid)) or 0
+            end
+        end
+    end
+    return entries
+end
+
 --- Harvested plants that refine back to a seed (excludes resin / one-way byproducts).
-function Catalog.ListPlantEntries()
+function Catalog.ListPlantEntries(opts)
+    opts = type(opts) == "table" and opts or {}
+    local force = opts.force == true
+    local knowGen = KnowledgeGen()
+    local snapGen = InventorySnapGen()
+    if not force
+        and type(_plantEntries) == "table"
+        and _plantEntriesGen == knowGen
+    then
+        if _plantEntriesSnapGen ~= snapGen then
+            RefreshPlantEntryStocks(_plantEntries)
+            _plantEntriesSnapGen = snapGen
+        end
+        return _plantEntries
+    end
     local out = {}
     local seen = {}
     local Know = StockPiler4.Knowledge
@@ -950,6 +1021,9 @@ function Catalog.ListPlantEntries()
         end
         return na < nb
     end)
+    _plantEntries = out
+    _plantEntriesGen = knowGen
+    _plantEntriesSnapGen = snapGen
     return out
 end
 
@@ -974,6 +1048,7 @@ function Catalog.ForgetPlant(plantUid)
     if plantUid <= 0 then
         return false
     end
+    Catalog.InvalidatePlantEntriesCache()
     local Know = StockPiler4.Knowledge
     local grows = Know and Know.Grows and Know.Grows() or nil
     local refines = Know and Know.Refines and Know.Refines() or nil

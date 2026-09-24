@@ -1247,10 +1247,15 @@ local function FocusBottleneckForSpec(specKey, focus, demand)
 end
 
 local function CollectAutoGrowSeedLines()
-    local snapGen = CurrentSnapGen()
+    -- Structural seed lines (uids/specs). Bag snapGen must not bust this
+    -- cache — BufferFlags/CollectIntents hit it every orch tick.
     local Watch = StockPiler4.Watch
     local watchGen = Watch and Watch.GetGen and Watch.GetGen() or 0
-    local cacheKey = tostring(snapGen) .. ":" .. tostring(watchGen)
+    local knowGen = 0
+    if StockPiler4.Knowledge and StockPiler4.Knowledge.GetGen then
+        knowGen = tonumber(StockPiler4.Knowledge.GetGen()) or 0
+    end
+    local cacheKey = tostring(watchGen) .. ":" .. tostring(knowGen)
     if type(Planner._seedLinesCache) == "table" and Planner._seedLinesCacheKey == cacheKey then
         return Planner._seedLinesCache
     end

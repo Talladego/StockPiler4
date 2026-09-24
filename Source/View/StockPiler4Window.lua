@@ -35,7 +35,12 @@ StockPiler4Window.Tabs = {
         labelKey = "ui.tab_plants",
         refresh = function()
             if StockPiler4TabPlants and StockPiler4TabPlants.Refresh then
-                StockPiler4TabPlants.Refresh()
+                -- Warm-cache tab flips / UiFlush: stock counts only (Catalog + list
+                -- rebuild was the ~700-900ms RefreshWatch spike on Plants).
+                local warm = type(StockPiler4TabPlants.listData) == "table"
+                    and #StockPiler4TabPlants.listData > 0
+                    and StockPiler4TabPlants._listBuildKey ~= nil
+                StockPiler4TabPlants.Refresh(warm and { stocksOnly = true } or nil)
             end
         end,
     },
