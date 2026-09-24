@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ModuleFile xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <UiMod name="StockPiler4" version="0.4.18" date="2026-09-24">
+    <UiMod name="StockPiler4" version="0.4.19" date="2026-09-24">
         <Author name="Talladego" email="" />
         <Description text="StockPiler4 - clean-core cult/apo stock automation. Parallel-safe with StockPiler3." />
         <VersionSettings gameVersion="1.4.8" windowsVersion="1.0" savedVariablesVersion="1.0" />
@@ -46,6 +46,7 @@
             <File name="Source/Knowledge/BrewLearn.lua" />
             <File name="Source/Knowledge/SeedMap.lua" />
             <File name="Source/Knowledge/GenusLadder.lua" />
+            <File name="Source/Knowledge/SkillRates.lua" />
             <File name="Source/Knowledge/Additives.lua" />
             <File name="Source/Knowledge/LearnBridge.lua" />
             <File name="Source/Stores/GardenStore.lua" />
