@@ -610,6 +610,15 @@ function Grow.HasPendingPlant()
     return false
 end
 
+function Grow.HasPendingAdditive()
+    for _, n in pairs(Grow._pendingAdditive) do
+        if (tonumber(n) or 0) > 0 then
+            return true
+        end
+    end
+    return false
+end
+
 ----------------------------------------------------------------
 -- IssuePlantOne
 ----------------------------------------------------------------
@@ -959,8 +968,24 @@ function Grow.TryAdditive(opId)
                 tostring(pick.slot),
                 tostring(opId or "?")
             ))
-            if Sch and Sch.WakeAutoGrow then
-                Sch.WakeAutoGrow()
+            -- Same quiet envelope as PlantSeed: CultivationUpdated soil/water/nutrient
+            -- storms were Footer/RefreshWatch hitches without ArmPlantQuiet (libperf).
+            if Sch and Sch.ArmPlantQuiet then
+                Sch.ArmPlantQuiet()
+            end
+            if Sch and Sch.SkipPlanThisFrame then
+                Sch.SkipPlanThisFrame()
+            end
+            if Sch and Sch.SkipUiThisFrame then
+                Sch.SkipUiThisFrame()
+            end
+            if Sch and Sch.SuppressInventorySideEffects then
+                Sch.SuppressInventorySideEffects(2)
+            end
+            -- Keep 1s AutoGrow ticks for the next additive; do not InvalidatePlantQueue
+            -- (WakeAutoGrow) — that forced BufferFlags/CollectIntents mid-grow.
+            if Sch and Sch.SetAutoGrowIdle then
+                Sch.SetAutoGrowIdle(false)
             end
         else
             Grow.ClearPendingAdditive(plotNum)

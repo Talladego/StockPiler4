@@ -637,6 +637,11 @@ function Refine.PeekCachedBufferPending()
     return flags.pending == true
 end
 
+--- True when BufferFlags cache is warm (orch can peek without rebuild).
+function Refine.HasBufferFlagsCache()
+    return type(Refine._bufferFlags) == "table"
+end
+
 --- O(1) urgent snap invalidate - do not rebuild BufferFlags / HasAnyBufferShort here.
 function Refine.OnUrgentInventorySnap()
     Refine.InvalidateIntentCache()

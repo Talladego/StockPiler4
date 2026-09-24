@@ -94,3 +94,17 @@ The only reason `FrameWork` was needed is that **StockPiler4's data structures a
    - Total frame cost: **~1.5ms** (well within the 16.6ms budget for 60 FPS).
 3. **Reserve Time-Slicing Only for Catalog Browsing:**
    - The *only* legitimate use for frame-slicing in RoR is populating an unindexed catalog of 500+ items or recipes when opening a search window for the first time. It should never sit between bag events and the craft macro readiness loop.
+
+---
+
+### 5. Practice update (0.4.31 plant / additive / harvest soak)
+
+**Decision:** Do **not** reintroduce FrameWork slicing for CultivationUpdated / plant / additive / harvest spikes. Libperf trails (`Footer`+`RefreshWatch`+`CultivationUpdated` x4, `Orch`+`BufferFlags`+`CollectIntents`) were addressed with coalesce / quiet / peek:
+
+| Spike | Non-slicing mitigation |
+| :--- | :--- |
+| CultivationUpdated x4 + Footer/RefreshWatch | Extend `ArmPlantQuiet` while plant/additive pending; skip Footer dirty while quiet |
+| Additive mid-grow WakeAutoGrow | Quiet + SkipPlan/Ui; `SetAutoGrowIdle(false)` only (no plant-queue invalidate) |
+| Orch plant then BufferFlags/CollectIntents | Drop post-plant `WakeAutoGrow`; orch peeks BufferFlags cache |
+
+**Safety boundary:** Quiet holds Watch paint and plan rebuild for ~2s after plant/additive commits. AutoGrow still runs additives on the 1s tick (`SetAutoGrowIdle(false)`). Harvest still uses `ArmHarvestStorm`. Craftable / plantIntent correctness is not deferred across quiet — only UI flush and full PlanRebuild.

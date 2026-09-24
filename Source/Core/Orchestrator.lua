@@ -70,6 +70,14 @@ local function TryBuyTick(opId)
 end
 
 local function HasPendingBufferRefine()
+    local Refine = StockPiler4.Refine
+    -- Prefer O(1) peek on the orch hot path; full BufferFlags rebuild only when
+    -- no cache (first tick / after invalidate).
+    if Refine and Refine.HasBufferFlagsCache and Refine.HasBufferFlagsCache() == true
+        and Refine.PeekCachedBufferPending
+    then
+        return Refine.PeekCachedBufferPending() == true
+    end
     local Grow = StockPiler4.Grow
     if Grow and Grow.HasPendingBufferRefine and Grow.HasPendingBufferRefine() == true then
         return true
@@ -169,9 +177,12 @@ local function TryExecutePlant(opId, opts)
     SetPhase("planting", opts.phaseReason or "auto")
     -- Any successful plant means plots are fillable again.
     Orch.ClearFillBlocked()
+    -- ExecutePlant already ArmPlantQuiet + InvalidatePlantQueue. Do not WakeAutoGrow
+    -- here — that re-invalidated the plant queue and piled BufferFlags/CollectIntents
+    -- onto the plant frame (libperf Orch+ExecutePlant+CollectIntents trails).
     local Sch = StockPiler4.Scheduler
-    if Sch and Sch.WakeAutoGrow then
-        Sch.WakeAutoGrow()
+    if Sch and Sch.SetAutoGrowIdle then
+        Sch.SetAutoGrowIdle(false)
     end
     return true
 end
@@ -575,9 +586,7 @@ function Orch._TickBody()
         end
         if added then
             SetPhase("planting", "additive")
-            if Sch and Sch.WakeAutoGrow then
-                Sch.WakeAutoGrow()
-            end
+            -- TryAdditive arms plant quiet + fast ticks; no WakeAutoGrow.
             EndTick()
             return
         end

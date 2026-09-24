@@ -175,6 +175,19 @@ function Bridge.OnCultivationUpdated()
             Sch.SkipPlanThisFrame()
         end
     end
+    -- Plant / additive commit storms: extend quiet so soil/water/nutrient
+    -- CultivationUpdated x4 does not flush Footer/RefreshWatch (libperf ~10s trail).
+    local cultBusy = Grow and (
+        (Grow.HasPendingPlant and Grow.HasPendingPlant() == true)
+        or (Grow.HasPendingAdditive and Grow.HasPendingAdditive() == true)
+        or (Grow.NeedsCurrentStageAdditive and Grow.NeedsCurrentStageAdditive() == true)
+    )
+    if cultBusy and Sch and Sch.ArmPlantQuiet then
+        Sch.ArmPlantQuiet()
+        if Sch.SkipPlanThisFrame then
+            Sch.SkipPlanThisFrame()
+        end
+    end
     if StockPiler4.Garden and StockPiler4.Garden.OnCultivationUpdated then
         StockPiler4.Garden.OnCultivationUpdated(plotNum)
     elseif StockPiler4.Garden and StockPiler4.Garden.SyncAll then
@@ -197,10 +210,11 @@ function Bridge.OnCultivationUpdated()
         end
     end
     if Grow and Grow.NeedsCurrentStageAdditive and Grow.NeedsCurrentStageAdditive()
-        and Sch and Sch.WakeAutoGrow
+        and Sch and Sch.SetAutoGrowIdle
         and not storm
     then
-        Sch.WakeAutoGrow()
+        -- Fast ticks for next additive; Quiet already holds plan/UI.
+        Sch.SetAutoGrowIdle(false)
     end
     if StockPiler4.Perf and StockPiler4.Perf.End then
         StockPiler4.Perf.End("CultivationUpdated")
