@@ -1003,7 +1003,11 @@ local function CollectFocus(mode)
                             local still = gap > 0
                             if not still then
                                 -- Plan-backed shared contest / grow still-needed.
-                                if RS.WatchStillNeedsGrow then
+                                local still = true
+                                local PlannerMod = StockPiler4.Planner
+                                if PlannerMod and PlannerMod.WatchStillNeedsGrow then
+                                    still = PlannerMod.WatchStillNeedsGrow(potion, recipe, target, watchKey) == true
+                                elseif RS.WatchStillNeedsGrow then
                                     still = RS.WatchStillNeedsGrow(potion, recipe, target, watchKey) == true
                                 end
                             end
@@ -2041,7 +2045,8 @@ local function SeedBufferShort(recipe, potionKey, row)
         return false
     end
     -- Stocked watches still enforce buffer (protect seed lines from exhaustion).
-    if RS and RS.WatchHasSeedBufferShort then
+    local DP = StockPiler4.DemandPlan
+    if DP and DP.WatchHasSeedBufferShort then
         if type(row) == "table" then
             local snapGen = CurrentSnapGen()
             local prior = row.seedBufferSeedUids
@@ -2053,7 +2058,7 @@ local function SeedBufferShort(recipe, potionKey, row)
             end
         end
         local seedUids = type(row) == "table" and row.seedBufferSeedUids or nil
-        return RS.WatchHasSeedBufferShort(recipe, { seedUids = seedUids }) == true
+        return DP.WatchHasSeedBufferShort(recipe, { seedUids = seedUids }) == true
     end
     return false
 end
@@ -4049,6 +4054,14 @@ end
 
 function Planner.WatchStillNeedsGrow(potion, recipe, target, watchKey)
     return WatchStillNeedsGrow(potion, recipe, target, watchKey)
+end
+
+function Planner.WatchHasSeedBufferShort(recipe, opts)
+    local DP = StockPiler4.DemandPlan
+    if DP and DP.WatchHasSeedBufferShort then
+        return DP.WatchHasSeedBufferShort(recipe, opts) == true
+    end
+    return false
 end
 
 function Planner.FocusSpecKeys(focus)

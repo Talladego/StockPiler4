@@ -330,10 +330,12 @@ local function PatchPlanRowTargetMet(session, liveHave)
                     local bufferShort = false
                     local Watch = StockPiler4.Watch
                     local RS = StockPiler4.RecipeSpec
+                    local DP = StockPiler4.DemandPlan
                     if Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true
-                        and RS and RS.WatchHasSeedBufferShort and type(recipe) == "table"
-                        and RS.ShouldAutoGrowPotion
+                        and type(recipe) == "table"
+                        and RS and RS.ShouldAutoGrowPotion
                         and RS.ShouldAutoGrowPotion(row.potionKey or row.potionRecipeKey or row.id, nil) == true
+                        and DP and DP.WatchHasSeedBufferShort
                     then
                         local seedUids = row.seedBufferSeedUids
                         if type(seedUids) ~= "table" or #seedUids == 0 then
@@ -350,7 +352,7 @@ local function PatchPlanRowTargetMet(session, liveHave)
                                 end
                             end
                         end
-                        bufferShort = RS.WatchHasSeedBufferShort(recipe, { seedUids = seedUids }) == true
+                        bufferShort = DP.WatchHasSeedBufferShort(recipe, { seedUids = seedUids }) == true
                     end
                     if bufferShort then
                         row.statusKey = "need_seeds"

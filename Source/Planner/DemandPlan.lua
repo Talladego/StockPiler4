@@ -617,11 +617,11 @@ local function BuildBalancedSpecDemand(opts)
                 local deficit = math.max(0, target - have)
 
                 local stillNeeds = true
-
-                if RS.WatchStillNeedsGrow then
-
+                local Planner = StockPiler4.Planner
+                if Planner and Planner.WatchStillNeedsGrow then
+                    stillNeeds = Planner.WatchStillNeedsGrow(potion, recipe, target, watchKey) == true
+                elseif RS.WatchStillNeedsGrow then
                     stillNeeds = RS.WatchStillNeedsGrow(potion, recipe, target, watchKey) == true
-
                 end
 
                 if uid > 0 and deficit > 0 and target > 0 and stillNeeds then
@@ -1081,3 +1081,148 @@ function DemandPlan.Rebuild(opts)
 end
 
 
+
+--- True when Seed Buffer is on and any growable refinable recipe line is short.
+--- opts.seedUids: known seed UIDs from plan tips (hot path).
+function DemandPlan.WatchHasSeedBufferShort(recipe, opts)
+    if not (StockPiler4.Watch and StockPiler4.Watch.IsSeedBufferEnabled
+        and StockPiler4.Watch.IsSeedBufferEnabled() == true)
+    then
+        return false
+    end
+    if type(recipe) ~= "table" then
+        return false
+    end
+    opts = type(opts) == "table" and opts or {}
+    local RS = StockPiler4.RecipeSpec
+    local Inv = StockPiler4.Inventory
+    local snapGen = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
+    local recipeId = tostring(
+        recipe.specKey or recipe.recipeSpecKey or recipe.key or recipe
+    )
+    local memo = DemandPlan._seedBufferShortMemo
+    if type(memo) ~= "table" or tonumber(memo.snapGen) ~= snapGen then
+        memo = { snapGen = snapGen, byRecipe = {} }
+        DemandPlan._seedBufferShortMemo = memo
+    end
+    if memo.byRecipe[recipeId] ~= nil then
+        return memo.byRecipe[recipeId] == true
+    end
+
+    local Refine = StockPiler4.Refine
+    local buffer = StockPiler4.Watch.GetSeedBufferMin and StockPiler4.Watch.GetSeedBufferMin() or 5
+
+    local function CreditForSeed(seedUid)
+        seedUid = tonumber(seedUid) or 0
+        if seedUid <= 0 then
+            return nil
+        end
+        if Refine and Refine.GetSeedBudget then
+            local budget = Refine.GetSeedBudget(seedUid)
+            return tonumber(budget and budget.credit) or 0
+        end
+        if Inv and Inv.CountByUid then
+            return tonumber(Inv.CountByUid(seedUid)) or 0
+        end
+        return 0
+    end
+
+    local function AnyKnownSeedShort(seedUids)
+        if type(seedUids) ~= "table" or #seedUids == 0 then
+            return nil
+        end
+        local any = false
+        local checked = false
+        for i = 1, #seedUids do
+            local credit = CreditForSeed(seedUids[i])
+            if credit ~= nil then
+                checked = true
+                if credit < buffer then
+                    any = true
+                    break
+                end
+            end
+        end
+        if not checked then
+            return nil
+        end
+        return any
+    end
+
+    local knownShort = AnyKnownSeedShort(opts.seedUids)
+    if knownShort ~= nil then
+        memo.byRecipe[recipeId] = knownShort
+        return knownShort
+    end
+
+    local SM = StockPiler4.SeedMap
+    if type(SM) ~= "table" or not SM.IsGrowableSpec then
+        memo.byRecipe[recipeId] = false
+        return false
+    end
+    if RS and RS.HydrateRecipeSlots then
+        RS.HydrateRecipeSlots(recipe)
+    end
+
+    local lineByKey = nil
+    local P = StockPiler4.Planner
+    local lines = nil
+    if P and P.CollectAutoGrowSeedLines then
+        lines = P.CollectAutoGrowSeedLines()
+    elseif RS and RS.CollectAutoGrowSeedLines then
+        lines = RS.CollectAutoGrowSeedLines()
+    end
+    if type(lines) == "table" and #lines > 0 then
+        lineByKey = {}
+        for i = 1, #lines do
+            local line = lines[i]
+            local k = type(line) == "table" and tostring(line.specKey or "") or ""
+            if k ~= "" then
+                lineByKey[k] = line
+            end
+        end
+    end
+
+    local MS = StockPiler4.MaterialSpec
+    local slots = recipe.slots or {}
+    local seen = {}
+    local short = false
+    for i = 1, #slots do
+        local slot = slots[i]
+        local spec = slot and (slot.spec or (RS and RS.ResolveSlotSpec and RS.ResolveSlotSpec(slot)))
+        if type(spec) == "table" and SM.IsGrowableSpec(spec) then
+            if not (SM.IsOneWayHarvestSpec and SM.IsOneWayHarvestSpec(spec) == true) then
+                local productKey = nil
+                if MS and MS.ProductKey then
+                    productKey = MS.ProductKey(spec)
+                end
+                if type(productKey) ~= "string" or productKey == "" then
+                    productKey = tostring(i)
+                end
+                if seen[productKey] ~= true then
+                    seen[productKey] = true
+                    local seedUid = 0
+                    local line = lineByKey and lineByKey[productKey]
+                    if type(line) == "table" then
+                        seedUid = tonumber(line.seedUid) or 0
+                    end
+                    if seedUid <= 0 then
+                        local seed = SM.ResolveSeedForSpec and SM.ResolveSeedForSpec(spec)
+                        if type(seed) == "table" then
+                            seedUid = tonumber(seed.uniqueID) or 0
+                        end
+                    end
+                    if seedUid > 0 then
+                        local credit = CreditForSeed(seedUid) or 0
+                        if credit < buffer then
+                            short = true
+                            break
+                        end
+                    end
+                end
+            end
+        end
+    end
+    memo.byRecipe[recipeId] = short
+    return short
+end

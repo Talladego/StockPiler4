@@ -34,9 +34,7 @@ Sch._lastPlanBuiltAt = 0
 Sch._autoAccum = 0
 Sch._autoGrowFast = true
 Sch._suppressInvTicks = 0
-Sch._pendingBagFlushAfterSuppress = false
-Sch._pendingBagNeedQueueAfterSuppress = false
-Sch._pendingPlanAfterSuppress = false
+Sch._pendingAfterSuppress = { bagFlush = false, bagQueue = false, plan = false }
 Sch._initialized = false
 Sch._harvestStormUntil = 0
 Sch._plantQuietUntil = 0
@@ -103,12 +101,17 @@ local function DecaySuppressInventorySideEffects()
     if StockPiler4.Inventory and StockPiler4.Inventory.FlushPendingSnapGen then
         StockPiler4.Inventory.FlushPendingSnapGen()
     end
-    local needBag = Sch._pendingBagFlushAfterSuppress == true
-    local needQueue = Sch._pendingBagNeedQueueAfterSuppress == true
-    local needPlan = Sch._pendingPlanAfterSuppress == true
-    Sch._pendingBagFlushAfterSuppress = false
-    Sch._pendingBagNeedQueueAfterSuppress = false
-    Sch._pendingPlanAfterSuppress = false
+    local pending = Sch._pendingAfterSuppress
+    if type(pending) ~= "table" then
+        pending = { bagFlush = false, bagQueue = false, plan = false }
+        Sch._pendingAfterSuppress = pending
+    end
+    local needBag = pending.bagFlush == true
+    local needQueue = pending.bagQueue == true
+    local needPlan = pending.plan == true
+    pending.bagFlush = false
+    pending.bagQueue = false
+    pending.plan = false
     if needBag then
         Sch.EnqueueBagFlush(needQueue)
     elseif needQueue then
@@ -547,9 +550,14 @@ end
 function Sch.EnqueueBagFlush(needQueue)
     ArmPipelineDebounce()
     if Sch.IsInventorySideEffectsSuppressed() then
-        Sch._pendingBagFlushAfterSuppress = true
+        local pending = Sch._pendingAfterSuppress
+        if type(pending) ~= "table" then
+            pending = { bagFlush = false, bagQueue = false, plan = false }
+            Sch._pendingAfterSuppress = pending
+        end
+        pending.bagFlush = true
         if needQueue == true then
-            Sch._pendingBagNeedQueueAfterSuppress = true
+            pending.bagQueue = true
         end
         return
     end
@@ -572,7 +580,12 @@ function Sch.EnqueuePlanRebuild(opts)
     local nudge = opts.nudge == true
     ArmPipelineDebounce()
     if Sch.IsInventorySideEffectsSuppressed() then
-        Sch._pendingPlanAfterSuppress = true
+        local pending = Sch._pendingAfterSuppress
+        if type(pending) ~= "table" then
+            pending = { bagFlush = false, bagQueue = false, plan = false }
+            Sch._pendingAfterSuppress = pending
+        end
+        pending.plan = true
         return
     end
     if Sch._bagDue == true then
