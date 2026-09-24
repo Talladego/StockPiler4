@@ -883,10 +883,6 @@ function Buy.CollectBuyJobs()
             allowPlantBuys = Buy._allowPlantBuys == true,
             fairFocus = true,
         }) or {}
-    elseif StockPiler4.RecipeSpec and StockPiler4.RecipeSpec.CollectVendorBuyJobs then
-        jobs = StockPiler4.RecipeSpec.CollectVendorBuyJobs({
-            allowPlantBuys = Buy._allowPlantBuys == true,
-        }) or {}
     end
 
     -- Reject growables when CanAutoGrow (allowPlantBuys false).

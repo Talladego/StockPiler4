@@ -864,15 +864,14 @@ local function ResolveWatchRow(watchKey, watch)
 end
 
 local function WatchWantsAutoGrow(watchKey, watch)
-    local RS = RecipeSpec()
     watch = ResolveWatchRow(watchKey, watch)
-    if RS and RS.ShouldAutoGrowPotion then
-        return RS.ShouldAutoGrowPotion(watchKey, watch) == true
+    local Watch = StockPiler4.Watch
+    if Watch and Watch.ShouldAutoGrowPotion then
+        return Watch.ShouldAutoGrowPotion(watchKey, watch) == true
     end
     if type(watch) ~= "table" or watch.enabled ~= true then
         return false
     end
-    local Watch = StockPiler4.Watch
     if Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() ~= true then
         return false
     end
@@ -1007,8 +1006,8 @@ local function CollectFocus(mode)
                                 local PlannerMod = StockPiler4.Planner
                                 if PlannerMod and PlannerMod.WatchStillNeedsGrow then
                                     still = PlannerMod.WatchStillNeedsGrow(potion, recipe, target, watchKey) == true
-                                elseif RS.WatchStillNeedsGrow then
-                                    still = RS.WatchStillNeedsGrow(potion, recipe, target, watchKey) == true
+                                else
+                                    still = true
                                 end
                             end
                             if still then
@@ -2550,9 +2549,7 @@ local function BuildSeedBufferTipData(opts)
     local rows = {}
     local RS = RecipeSpec()
     local lines = {}
-    if RS and RS.CollectAutoGrowSeedLines then
-        lines = RS.CollectAutoGrowSeedLines() or {}
-    elseif Planner.CollectAutoGrowSeedLines then
+    if Planner.CollectAutoGrowSeedLines then
         lines = Planner.CollectAutoGrowSeedLines() or {}
     end
     local byKey = {}

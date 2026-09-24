@@ -1027,3 +1027,19 @@ function Watch.ShouldAutoGrowPlant(plantKey)
     local watch = Watch.GetPlantWatch(plantKey)
     return type(watch) == "table" and watch.enabled == true and watch.autoGrow ~= false
 end
+
+--- Potion watch wants AutoGrow: master AG on + row enabled + row autoGrow.
+function Watch.ShouldAutoGrowPotion(potionKey, watch)
+    local Caps = StockPiler4.TradeSkillCaps
+    if Caps and Caps.CanAutoGrow and Caps.CanAutoGrow() ~= true then
+        return false
+    end
+    if Watch.IsAutoGrowEnabled() ~= true then
+        return false
+    end
+    if type(watch) ~= "table" then
+        local watches = Watch.GetWatches and Watch.GetWatches() or {}
+        watch = type(watches) == "table" and watches[tostring(potionKey or "")] or nil
+    end
+    return type(watch) == "table" and watch.enabled == true and watch.autoGrow == true
+end

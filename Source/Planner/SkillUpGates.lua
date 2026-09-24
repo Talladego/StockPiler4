@@ -280,11 +280,10 @@ local function PotionNeedsSkill(key)
 end
 
 local function PotionWatchWantsAutoGrow(key, watch)
-    local RS = StockPiler4.RecipeSpec
-    if RS and RS.ShouldAutoGrowPotion then
-        return RS.ShouldAutoGrowPotion(key, watch) == true
-    end
     local Watch = StockPiler4.Watch
+    if Watch and Watch.ShouldAutoGrowPotion then
+        return Watch.ShouldAutoGrowPotion(key, watch) == true
+    end
     if type(watch) ~= "table" or watch.enabled ~= true then
         return false
     end

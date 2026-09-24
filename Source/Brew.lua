@@ -191,8 +191,9 @@ local function RowIsReadyToCraft(row)
         local pk = row.potionKey or row.potionRecipeKey or row.id
         local Watch = StockPiler4.Watch
         local RS = StockPiler4.RecipeSpec
-        if RS and RS.ShouldAutoGrowPotion then
-            if RS.ShouldAutoGrowPotion(pk, nil) ~= true then
+        local WatchAG = StockPiler4.Watch
+        if WatchAG and WatchAG.ShouldAutoGrowPotion then
+            if WatchAG.ShouldAutoGrowPotion(pk, nil) ~= true then
                 return false
             end
         elseif Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() ~= true then
@@ -333,8 +334,8 @@ local function PatchPlanRowTargetMet(session, liveHave)
                     local DP = StockPiler4.DemandPlan
                     if Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true
                         and type(recipe) == "table"
-                        and RS and RS.ShouldAutoGrowPotion
-                        and RS.ShouldAutoGrowPotion(row.potionKey or row.potionRecipeKey or row.id, nil) == true
+                        and StockPiler4.Watch and StockPiler4.Watch.ShouldAutoGrowPotion
+                        and StockPiler4.Watch.ShouldAutoGrowPotion(row.potionKey or row.potionRecipeKey or row.id, nil) == true
                         and DP and DP.WatchHasSeedBufferShort
                     then
                         local seedUids = row.seedBufferSeedUids

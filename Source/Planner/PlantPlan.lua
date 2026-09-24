@@ -699,7 +699,8 @@ local function CollectPlantWatchOrder(RS)
         if potionKey == "" or deficit <= 0 or type(recipe) ~= "table" then
             return
         end
-        if RS.ShouldAutoGrowPotion and RS.ShouldAutoGrowPotion(potionKey, nil) ~= true then
+        local WatchAG = StockPiler4.Watch
+        if WatchAG and WatchAG.ShouldAutoGrowPotion and WatchAG.ShouldAutoGrowPotion(potionKey, nil) ~= true then
             return
         end
         have = tonumber(have) or 0
@@ -759,7 +760,8 @@ local function CollectPlantWatchOrder(RS)
         local watches = Watch and Watch.GetWatches and Watch.GetWatches() or {}
         if type(watches) == "table" then
             for watchKey, watch in pairs(watches) do
-                if RS.ShouldAutoGrowPotion and RS.ShouldAutoGrowPotion(watchKey, watch) == true then
+                local WatchAG = StockPiler4.Watch
+                if WatchAG and WatchAG.ShouldAutoGrowPotion and WatchAG.ShouldAutoGrowPotion(watchKey, watch) == true then
                     local resolved = RS.ResolveWatchPotion and RS.ResolveWatchPotion(watchKey)
                     local potion = resolved and resolved.potion
                     local recipe = RS.RecipeSpecForPotion and RS.RecipeSpecForPotion(watchKey)
@@ -1244,10 +1246,11 @@ function PlantPlan.PickPlantJob(opts)
     local Watch = StockPiler4.Watch
     local lines = {}
     local focusGap = maxGap
+    local PlannerMod = StockPiler4.Planner
     if Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true
-        and RS.CollectAutoGrowSeedLines
+        and PlannerMod and PlannerMod.CollectAutoGrowSeedLines
     then
-        lines = RS.CollectAutoGrowSeedLines() or {}
+        lines = PlannerMod.CollectAutoGrowSeedLines() or {}
         if focusGap <= 0 then
             for i = 1, #watches do
                 local d = tonumber(watches[i].deficit) or 0

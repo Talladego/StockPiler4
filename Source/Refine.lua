@@ -517,8 +517,8 @@ local function EnsureBufferFlagsCached()
     if Perf and Perf.Begin then
         Perf.Begin("Refine.BufferFlags")
     end
-    local RS = StockPiler4.RecipeSpec
-    local lines = (RS and RS.CollectAutoGrowSeedLines and RS.CollectAutoGrowSeedLines()) or {}
+    local Planner = StockPiler4.Planner
+    local lines = (Planner and Planner.CollectAutoGrowSeedLines and Planner.CollectAutoGrowSeedLines()) or {}
     local pending, short = false, false
     for i = 1, #lines do
         if LineConvertiblePending(lines[i]) then
@@ -689,8 +689,8 @@ function Refine.HasPendingBufferRefine()
     if not (Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true) then
         return false
     end
-    local RS = StockPiler4.RecipeSpec
-    if not (RS and RS.CollectAutoGrowSeedLines) then
+    local Planner = StockPiler4.Planner
+    if not (Planner and Planner.CollectAutoGrowSeedLines) then
         return false
     end
     return EnsureBufferFlagsCached().pending == true
@@ -701,8 +701,8 @@ function Refine.HasAnyBufferShort()
     if not (Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true) then
         return false
     end
-    local RS = StockPiler4.RecipeSpec
-    if not (RS and RS.CollectAutoGrowSeedLines) then
+    local Planner = StockPiler4.Planner
+    if not (Planner and Planner.CollectAutoGrowSeedLines) then
         return false
     end
     return EnsureBufferFlagsCached().short == true
@@ -794,10 +794,6 @@ local function ResolveDemand(opts)
     local DP = StockPiler4.DemandPlan
     if DP and DP.Build then
         return DP.Build()
-    end
-    local RS = StockPiler4.RecipeSpec
-    if RS and RS.BuildBalancedSpecDemand then
-        return RS.BuildBalancedSpecDemand()
     end
     return nil
 end
@@ -1035,8 +1031,9 @@ function Refine.CollectIntents(opts)
     local seenBuffer = {}
 
     -- 1) Seed-buffer (bootstrap when brew deficit 0 but buffer short)
-    if bufferOn and RS and RS.CollectAutoGrowSeedLines then
-        local lines = RS.CollectAutoGrowSeedLines() or {}
+    local Planner = StockPiler4.Planner
+    if bufferOn and Planner and Planner.CollectAutoGrowSeedLines then
+        local lines = Planner.CollectAutoGrowSeedLines() or {}
         for i = 1, #lines do
             local line = lines[i]
             local seedUid = tonumber(line.seedUid) or 0

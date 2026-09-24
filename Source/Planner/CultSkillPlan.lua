@@ -173,7 +173,8 @@ local function PickBestBagSeedViaClimbPlan(targetMax)
     local Inv = StockPiler4.Inventory
     local Refine = StockPiler4.Refine
     local Items = StockPiler4.Items
-    if not (CE and CE.PickBestOwnedSeed and SM and SM.GetGenusLadder and Inv and Inv.ForEachItem) then
+    local GL = StockPiler4.GenusLadder
+    if not (CE and CE.PickBestOwnedSeed and ((GL and GL.GetLadder) or (SM and SM.GetGenusLadder)) and Inv and Inv.ForEachItem) then
         return nil
     end
     local genera = {}
@@ -209,7 +210,8 @@ local function PickBestBagSeedViaClimbPlan(targetMax)
     local best = nil
     local bestScore = -1
     for genus, _ in pairs(genera) do
-        local ladder = SM.GetGenusLadder(genus)
+        local ladder = (GL and GL.GetLadder and GL.GetLadder(genus))
+            or (SM.GetGenusLadder and SM.GetGenusLadder(genus))
         if type(ladder) == "table" then
             local pick = CE.PickBestOwnedSeed({
                 ladder = ladder,

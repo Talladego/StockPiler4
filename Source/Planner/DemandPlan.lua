@@ -446,32 +446,22 @@ end
 
 local function WatchWantsAutoGrow(watchKey, watch)
 
-    local RS = RecipeSpec()
-
     watch = ResolveWatchRow(watchKey, watch)
 
-    if RS and RS.ShouldAutoGrowPotion then
-
-        return RS.ShouldAutoGrowPotion(watchKey, watch) == true
-
+    local Watch = StockPiler4.Watch
+    if Watch and Watch.ShouldAutoGrowPotion then
+        return Watch.ShouldAutoGrowPotion(watchKey, watch) == true
     end
 
     if type(watch) ~= "table" or watch.enabled ~= true then
-
         return false
-
     end
 
-    local Watch = StockPiler4.Watch
-
     if Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() ~= true then
-
         return false
-
     end
 
     return watch.autoGrow == true
-
 end
 
 
@@ -620,8 +610,6 @@ local function BuildBalancedSpecDemand(opts)
                 local Planner = StockPiler4.Planner
                 if Planner and Planner.WatchStillNeedsGrow then
                     stillNeeds = Planner.WatchStillNeedsGrow(potion, recipe, target, watchKey) == true
-                elseif RS.WatchStillNeedsGrow then
-                    stillNeeds = RS.WatchStillNeedsGrow(potion, recipe, target, watchKey) == true
                 end
 
                 if uid > 0 and deficit > 0 and target > 0 and stillNeeds then
@@ -1169,8 +1157,6 @@ function DemandPlan.WatchHasSeedBufferShort(recipe, opts)
     local lines = nil
     if P and P.CollectAutoGrowSeedLines then
         lines = P.CollectAutoGrowSeedLines()
-    elseif RS and RS.CollectAutoGrowSeedLines then
-        lines = RS.CollectAutoGrowSeedLines()
     end
     if type(lines) == "table" and #lines > 0 then
         lineByKey = {}

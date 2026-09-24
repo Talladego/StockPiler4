@@ -697,8 +697,13 @@ function CP.ScanUpgradePlant(opts)
         return nil
     end
     local ladder = opts.ladder
-    if type(ladder) ~= "table" and opts.familyKey and SM and SM.GetFamilyLadder then
-        ladder = SM.GetFamilyLadder(opts.familyKey)
+    if type(ladder) ~= "table" and opts.familyKey then
+        local GLF = StockPiler4.GenusLadder
+        if GLF and GLF.GetFamilyLadder then
+            ladder = GLF.GetFamilyLadder(opts.familyKey)
+        elseif SM and SM.GetFamilyLadder then
+            ladder = SM.GetFamilyLadder(opts.familyKey)
+        end
     end
     if type(ladder) == "table" and SM and SM.BestUpgradePlantOnLadder then
         return SM.BestUpgradePlantOnLadder(ladder, climbCap, opts.ownedSeedReq or 0, {
@@ -786,11 +791,22 @@ function CP.PickBestOwnedSeed(opts)
         return nil
     end
     local ladder = opts.ladder
-    if type(ladder) ~= "table" and opts.familyKey and SM and SM.GetFamilyLadder then
-        ladder = SM.GetFamilyLadder(opts.familyKey)
+    if type(ladder) ~= "table" and opts.familyKey then
+        local GLF = StockPiler4.GenusLadder
+        if GLF and GLF.GetFamilyLadder then
+            ladder = GLF.GetFamilyLadder(opts.familyKey)
+        elseif SM and SM.GetFamilyLadder then
+            ladder = SM.GetFamilyLadder(opts.familyKey)
+        end
     end
-    if type(ladder) == "table" and SM and SM.BestOwnedSeedOnLadder then
-        return SM.BestOwnedSeedOnLadder(ladder, climbCap, { mainsOnly = opts.mainsOnly == true })
+    if type(ladder) == "table" then
+        local GL = StockPiler4.GenusLadder
+        if GL and GL.BestOwnedRung then
+            return GL.BestOwnedRung(ladder, climbCap, { mainsOnly = opts.mainsOnly == true })
+        end
+        if SM and SM.BestOwnedSeedOnLadder then
+            return SM.BestOwnedSeedOnLadder(ladder, climbCap, { mainsOnly = opts.mainsOnly == true })
+        end
     end
     return nil
 end
@@ -811,8 +827,15 @@ local function CollectUpgradeTargets()
     local seenPlant = {}
 
     local function LadderFor(spec)
+        local GL = StockPiler4.GenusLadder
+        if GL and GL.GetLadderForSpec then
+            return GL.GetLadderForSpec(spec)
+        end
         if SM.GetGenusLadderForSpec then
             return SM.GetGenusLadderForSpec(spec)
+        end
+        if GL and GL.GetFamilyLadderForSpec then
+            return GL.GetFamilyLadderForSpec(spec)
         end
         return SM.GetFamilyLadderForSpec and SM.GetFamilyLadderForSpec(spec) or nil
     end
@@ -909,9 +932,6 @@ local function CollectUpgradeTargets()
     -- Potion / balanced demand (growable mats short).
     local DP = StockPiler4.DemandPlan
     local demand = DP and DP.Build and DP.Build() or nil
-    if type(demand) ~= "table" and RS and RS.BuildBalancedSpecDemand then
-        demand = RS.BuildBalancedSpecDemand()
-    end
     if type(demand) == "table" then
         for _, row in pairs(demand) do
             if type(row) == "table" and type(row.spec) == "table" then
