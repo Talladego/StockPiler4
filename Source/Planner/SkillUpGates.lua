@@ -135,7 +135,8 @@ function Gates.SetApoEnabled(enabled)
     return true
 end
 
-local function AllEnabledPlantWatchesStocked()
+--- True when every enabled plant watch is at/above target (Upgrade-owned watches count as stocked).
+function Gates.AllEnabledPlantWatchesStocked()
     local Watch = StockPiler4.Watch
     local plantWatches = Watch and Watch.GetPlantWatches and Watch.GetPlantWatches() or {}
     if type(plantWatches) ~= "table" then
@@ -170,7 +171,8 @@ local function AllEnabledPlantWatchesStocked()
     return true
 end
 
-local function SeedBufferOk()
+--- True when seed buffer is disabled or Grow reports the buffer satisfied.
+function Gates.SeedBufferOk()
     local Watch = StockPiler4.Watch
     if not (Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true) then
         return true
@@ -187,11 +189,11 @@ function Gates.WatchesDone()
     then
         return false
     end
-    if AllEnabledPlantWatchesStocked() ~= true then
+    if Gates.AllEnabledPlantWatchesStocked() ~= true then
         return false
     end
     -- SkillUp must not run while the seed buffer is short (even with no AutoGrow watches).
-    return SeedBufferOk()
+    return Gates.SeedBufferOk()
 end
 
 -- Statuses where a short watch can still advance (SkillUp must wait).
@@ -393,7 +395,7 @@ function Gates.WatchesAllowIdleSkillUp()
     if Gates.WatchesDone() == true then
         return true
     end
-    if SeedBufferOk() ~= true then
+    if Gates.SeedBufferOk() ~= true then
         return false
     end
     return Gates.AllShortWatchesProgressBlocked() == true

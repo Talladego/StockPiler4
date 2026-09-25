@@ -29,7 +29,8 @@ end
 
 CSP._stallLatch = nil
 
-local function SeedSkillReq(item)
+--- Crafting skill requirement from a seed/plant sample or catalog row.
+function CSP.SeedSkillReq(item)
     if type(item) ~= "table" then
         return 0
     end
@@ -38,6 +39,10 @@ local function SeedSkillReq(item)
         req = tonumber(item.bonuses[9]) or 0
     end
     return req
+end
+
+local function SeedSkillReq(item)
+    return CSP.SeedSkillReq(item)
 end
 
 local function LooksNonMainSeed(item, plantSpec)
@@ -309,7 +314,7 @@ function CSP.PickBestBagSeed()
 end
 
 --- Seed budget - ClimbPlan facade over Refine.GetSeedBudget.
-local function SeedBudget(seedUid)
+function CSP.SeedBudget(seedUid)
     local CE = ClimbEconomy()
     if CE and CE.GetSeedBudget then
         return CE.GetSeedBudget(seedUid)
@@ -329,6 +334,10 @@ local function SeedBudget(seedUid)
         headroom = 0,
         bufferMin = 0,
     }
+end
+
+local function SeedBudget(seedUid)
+    return CSP.SeedBudget(seedUid)
 end
 
 --- True when SkillUp should refine before planting (upgrade or buffer fill).

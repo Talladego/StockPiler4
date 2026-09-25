@@ -60,8 +60,8 @@ local function WaitingWatchesStatus(kind)
     local Watch = StockPiler4.Watch
     local potionShort = Watch and Watch.AllEnabledPotionWatchesStocked
         and Watch.AllEnabledPotionWatchesStocked() ~= true
-    local plantShort = AllEnabledPlantWatchesStocked() ~= true
-    local bufferShort = SeedBufferOk() ~= true
+    local plantShort = Gates().AllEnabledPlantWatchesStocked() ~= true
+    local bufferShort = Gates().SeedBufferOk() ~= true
 
     if bufferShort ~= true and Gates().AllShortWatchesProgressBlocked() == true then
         local lines = {
@@ -116,7 +116,7 @@ end
 local function CultStatusKeyAndText()
     if CSP().HasUpgradePlant() == true or CSP().HasRefinablePlants() == true then
         local pick = CSP().PickBestBagSeed()
-        local budget = pick and SeedBudget(tonumber(pick.seedUid) or 0) or nil
+        local budget = pick and CSP().SeedBudget(tonumber(pick.seedUid) or 0) or nil
         local headroom = type(budget) == "table" and (tonumber(budget.headroom) or 0) or 0
         if headroom > 0 or CSP().HasUpgradePlant() == true then
             return "refining", TOr("skillup.watch.cult_refining", L"Refining for seeds")
@@ -124,7 +124,7 @@ local function CultStatusKeyAndText()
     end
     local job = CSP().PickPlantJob and CSP().PickPlantJob() or nil
     if type(job) == "table" and (tonumber(job.plantable) or 0) >= 1 then
-        local budget = SeedBudget(tonumber(job.seedUid) or 0)
+        local budget = CSP().SeedBudget(tonumber(job.seedUid) or 0)
         local headroom = tonumber(budget.headroom) or 0
         if headroom > 0 then
             return "buffer_plant", TOr("skillup.watch.cult_buffer", L"Planting for seed buffer")
@@ -156,14 +156,14 @@ local function HighestInGroundSkillUpSeed()
         end
         local req = 0
         if type(item) == "table" then
-            req = SeedSkillReq(item)
+            req = CSP().SeedSkillReq(item)
         end
         if req <= 0 then
             local Inv = StockPiler4.Inventory
             if Inv and Inv.GetSample then
                 local sample = Inv.GetSample(seedUid)
                 if type(sample) == "table" then
-                    req = SeedSkillReq(sample)
+                    req = CSP().SeedSkillReq(sample)
                     if type(item) ~= "table" then
                         item = sample
                     end
@@ -176,7 +176,7 @@ local function HighestInGroundSkillUpSeed()
         if req <= 0 and StockPiler4.Items and StockPiler4.Items.GetByUid then
             local row = StockPiler4.Items.GetByUid(seedUid)
             if type(row) == "table" then
-                req = SeedSkillReq(row)
+                req = CSP().SeedSkillReq(row)
                 if type(item) ~= "table" then
                     item = row
                 end
@@ -275,7 +275,7 @@ local function BuildCultWatchStatusRow()
             plantUid = tonumber(SM.PrimaryPlantForSeed(seedUid)) or 0
         end
     end
-    local budget = SeedBudget(seedUid)
+    local budget = CSP().SeedBudget(seedUid)
     local live = tonumber(budget.live) or 0
     local buffer = tonumber(budget.bufferMin) or 0
     local statusKey, statusText, waitingLines
