@@ -539,20 +539,18 @@ function Orch._TickBody()
         end
     elseif canPlant and not hasSeeds then
         -- Reload/snap often leaves plantIntent nil while Grow cache is dirty;
-        -- refresh snapshot intents so upgrade planting does not wait for dumpall.
+        -- enqueue snapshot intent refresh (never PickPlantJob on the execute frame).
         local Planner = StockPiler4.Planner
         if Planner and Planner.NeedsPlantIntentRefresh
             and Planner.NeedsPlantIntentRefresh() == true
-            and Planner.RefreshPlantRefineIntentsNow
         then
-            Planner.RefreshPlantRefineIntentsNow()
-            hasSeeds = ProbePlantHasSeeds(Grow, usRefineFirst)
-            if hasSeeds and not holdHarvestBatch then
-                if TryExecutePlant(opId, { checkDefer = false }) then
-                    EndTick()
-                    return
-                end
+            if Sch and Sch.EnqueuePlantIntentRefresh then
+                Sch.EnqueuePlantIntentRefresh()
+            elseif Planner.RefreshPlantRefineIntentsNow then
+                -- Fallback only if Scheduler API missing; still skip plant this tick.
+                Planner.RefreshPlantRefineIntentsNow()
             end
+            -- Do not TryExecutePlant this tick — intent drain is one-heavy after quiet.
         end
         if HasPendingBufferRefine() or usRefineFirst then
             if not usRefineFirst and Orch._seedBufferRefineArmed ~= true

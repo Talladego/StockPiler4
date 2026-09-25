@@ -111,10 +111,14 @@ function PS.GetOrBuild(refresh)
     then
         local key = Planner.CacheKeyFromGens()
         if key ~= nil and key == PS._cacheKey then
-            if Planner.NeedsPlantIntentRefresh and Planner.NeedsPlantIntentRefresh() == true
-                and Planner.RefreshPlantRefineIntentsNow
-            then
-                Planner.RefreshPlantRefineIntentsNow()
+            if Planner.NeedsPlantIntentRefresh and Planner.NeedsPlantIntentRefresh() == true then
+                -- Defer off GetOrBuild/Orch execute frames onto Scheduler one-heavy.
+                local Sch2 = StockPiler4.Scheduler
+                if Sch2 and Sch2.EnqueuePlantIntentRefresh then
+                    Sch2.EnqueuePlantIntentRefresh()
+                elseif Planner.RefreshPlantRefineIntentsNow then
+                    Planner.RefreshPlantRefineIntentsNow()
+                end
             end
             return PS._plan
         end

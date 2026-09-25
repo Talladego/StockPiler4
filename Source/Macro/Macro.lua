@@ -962,8 +962,13 @@ function Macro.RequestEnabledSync(canHarvest, canBrew)
 end
 
 --- Apply pending RequestEnabledSync once (EngineEventBridge.OnUpdateProcessed).
+--- Held under quiet / settle / SkipUi and Watch→Footer→Macro stagger frames.
 function Macro.DrainEnabledSync()
     if Macro._enabledSyncPending ~= true then
+        return
+    end
+    local Sch = StockPiler4.Scheduler
+    if Sch and Sch.ShouldDeferMacroDrain and Sch.ShouldDeferMacroDrain() == true then
         return
     end
     Macro._enabledSyncPending = false

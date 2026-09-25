@@ -3775,10 +3775,16 @@ end
 --- Cheap/GardenPatch must refresh plant/refine intents: plot empty/fill flips
 --- plantIntent while RecipeStructuralKey stays the same. Stale nil plantIntent
 --- left Orch idle with empty plots until a force Build (/sp4 dumpall).
+local function PlantIntentHasSeed(plan)
+    return type(plan) == "table" and type(plan.plantIntent) == "table"
+        and (tonumber(plan.plantIntent.seedUid) or 0) > 0
+end
+
 local function RefreshPlantRefineIntents(stale)
     if type(stale) ~= "table" then
         return
     end
+    PerfBegin("IntentRefresh")
     local PlantPlan = StockPiler4.PlantPlan
     local Grow = StockPiler4.Grow
     local needPlantPick = Grow and Grow.HasEmptyPlot and Grow.HasEmptyPlot() == true
@@ -3786,12 +3792,16 @@ local function RefreshPlantRefineIntents(stale)
     if needPlantPick or not PlantIntentHasSeed(stale) then
         local plantJob = nil
         if PlantPlan and PlantPlan.PickPlantJob then
+            PerfBegin("IntentRefresh.PickPlant")
             plantJob = PlantPlan.PickPlantJob({ demand = stale.demand })
+            PerfEnd("IntentRefresh.PickPlant")
             if Grow and Grow.MarkPlantJobProbed then
                 Grow.MarkPlantJobProbed(plantJob)
             end
         elseif Grow and Grow.GetPlantJob then
+            PerfBegin("IntentRefresh.PickPlant")
             plantJob = Grow.GetPlantJob()
+            PerfEnd("IntentRefresh.PickPlant")
         end
         if PlantPlan and PlantPlan.BuildPlantIntent then
             stale.plantIntent = PlantPlan.BuildPlantIntent(plantJob)
@@ -3810,27 +3820,29 @@ local function RefreshPlantRefineIntents(stale)
         end
     end
     if not needRefine then
+        PerfEnd("IntentRefresh")
         return
     end
     local refineIntent = nil
     if Refine and Refine.CollectIntents then
+        PerfBegin("IntentRefresh.Collect")
         local intents = Refine.CollectIntents({ demand = stale.demand })
+        PerfEnd("IntentRefresh.Collect")
         if type(intents) == "table" and #intents > 0 and type(intents[1]) == "table" then
             refineIntent = intents[1]
         end
     end
     stale.refineIntent = refineIntent
     stale.refineIntents = refineIntent and { refineIntent } or {}
-end
-
-local function PlantIntentHasSeed(plan)
-    return type(plan) == "table" and type(plan.plantIntent) == "table"
-        and (tonumber(plan.plantIntent.seedUid) or 0) > 0
+    PerfEnd("IntentRefresh")
 end
 
 --- Republish current snapshot with fresh plant/refine intents (no full Build).
 --- Used when bags settle after reload while cache key still matches a nil-intent plan.
+--- Prefer Scheduler.EnqueuePlantIntentRefresh so this never shares a frame with
+--- Grow.ExecutePlant / TryAdditive (libperf Orchestrator.Tick unmarked trails).
 function Planner.RefreshPlantRefineIntentsNow()
+    PerfBegin("IntentRefresh.Now")
     local PS = StockPiler4.PlanSnapshot
     local stale = PS and PS.Get and PS.Get()
     if type(stale) ~= "table" then
@@ -3838,11 +3850,13 @@ function Planner.RefreshPlantRefineIntentsNow()
         if Sch and Sch.EnqueuePlanRebuild then
             Sch.EnqueuePlanRebuild({ nudge = true })
         end
+        PerfEnd("IntentRefresh.Now")
         return false
     end
     local before = PlantIntentHasSeed(stale)
     local plan = ClonePlanForPatch(stale)
     if type(plan) ~= "table" then
+        PerfEnd("IntentRefresh.Now")
         return false
     end
     RefreshPlantRefineIntents(plan)
@@ -3854,6 +3868,7 @@ function Planner.RefreshPlantRefineIntentsNow()
     local beforeUid = before and (tonumber(stale.plantIntent.seedUid) or 0) or 0
     local afterUid = after and (tonumber(plan.plantIntent.seedUid) or 0) or 0
     if beforeUid == afterUid and refineBeforeUid == refineAfterUid then
+        PerfEnd("IntentRefresh.Now")
         return false
     end
     local key = RefreshStaleCtx(plan)
@@ -3863,6 +3878,7 @@ function Planner.RefreshPlantRefineIntentsNow()
     plan.cacheKey = key
     plan.builtAt = (type(GetGameTime) == "function" and GetGameTime()) or 0
     PublishPlan(plan, key, { intentRefresh = true })
+    PerfEnd("IntentRefresh.Now")
     return after == true or refineAfterUid > 0
 end
 

@@ -73,6 +73,8 @@ function StockPiler4Window.RequestFooterRefresh()
 end
 
 --- Sync Harvest/Brew readiness: macros always; footer chrome only when window is open.
+--- Macro.Appearance is never applied inline from Footer — always RequestEnabledSync so
+--- Bridge can drain on a later idle frame (Watch → Footer → Macro stagger).
 function StockPiler4Window.SyncActionReadiness(opts)
     opts = type(opts) == "table" and opts or {}
     local immediate = opts.immediate == true
@@ -108,7 +110,7 @@ function StockPiler4Window.SyncActionReadiness(opts)
         and StockPiler4Window._footerCanHarvest == canHarvest
         and StockPiler4Window._footerCanBrew == canBrew
         and StockPiler4Window._footerCanClearWatches == canClearWatches
-    -- `immediate` must re-apply macro tint: ActionButton.UpdateEnabledState greys
+    -- `immediate` must still request macro tint: ActionButton.UpdateEnabledState greys
     -- our macros mid-craft while CanBrewNow can stay true, so appearanceKey is unchanged.
     if unchanged and not immediate then
         if StockPiler4.Macro == nil
@@ -186,16 +188,10 @@ function StockPiler4Window.SyncActionReadiness(opts)
     end
 
     if readinessChanged or immediate then
+        -- Never inline Macro.Appearance from Footer (settle/quiet/first-paint spikes).
+        -- Request + DrainEnabledSync on a later idle frame under ShouldDeferMacroDrain.
         if StockPiler4.Macro then
-            if immediate and StockPiler4.Macro.RefreshMacroButtonAppearance then
-                StockPiler4.Macro._enabledSyncPending = false
-                StockPiler4.Macro._pendingCanHarvest = nil
-                StockPiler4.Macro._pendingCanBrew = nil
-                StockPiler4.Macro.RefreshMacroButtonAppearance({
-                    canHarvest = canHarvest,
-                    canBrew = canBrew,
-                })
-            elseif StockPiler4.Macro.RequestEnabledSync then
+            if StockPiler4.Macro.RequestEnabledSync then
                 StockPiler4.Macro.RequestEnabledSync(canHarvest, canBrew)
             elseif StockPiler4.Macro.SyncEnabledState then
                 StockPiler4.Macro.SyncEnabledState(canHarvest, canBrew)
@@ -214,6 +210,9 @@ function StockPiler4Window.FlushPendingFooterRefresh()
         return
     end
     local Sch = StockPiler4.Scheduler
+    if Sch and Sch.ShouldDeferFooterFlush and Sch.ShouldDeferFooterFlush() == true then
+        return
+    end
     if Sch and Sch.SkipUiHoldFooter and Sch.SkipUiHoldFooter() == true then
         return
     end
@@ -239,7 +238,11 @@ function StockPiler4Window.FlushPendingFooterRefresh()
         end
     end
     StockPiler4Window._footerRefreshPending = false
+    -- Footer chrome only; Macro drains on a later idle frame.
     StockPiler4Window.SyncActionReadiness()
+    if Sch and Sch.NoteUiHeavy then
+        Sch.NoteUiHeavy("footer")
+    end
     if StockPiler4.HarvestTooltip and StockPiler4.HarvestTooltip.TickLive then
         StockPiler4.HarvestTooltip.TickLive()
     end
@@ -293,10 +296,15 @@ function StockPiler4Window.RefreshActiveTab()
     if tab and tab.refresh then
         tab.refresh()
     end
-    StockPiler4Window.RefreshFooterButtons()
     if StockPiler4.Perf and StockPiler4.Perf.End then
         StockPiler4.Perf.End("RefreshWatch")
     end
+    -- Footer on a later frame (Watch → Footer → Macro stagger); never inline here.
+    local Sch = StockPiler4.Scheduler
+    if Sch and Sch.NoteUiHeavy then
+        Sch.NoteUiHeavy("watch")
+    end
+    StockPiler4Window.RequestFooterRefresh()
 end
 
 function StockPiler4Window.RequestListRepopulate()
@@ -372,17 +380,12 @@ function StockPiler4Window.OnShow()
         StockPiler4TabWatch.PrimeRowChrome()
     end
     StockPiler4Window.PrimeTabListsIfNeeded()
-    -- Footer chrome immediately (do not wait for coalesce / settle).
-    StockPiler4Window.SyncActionReadiness({ immediate = true })
-    -- Coalesced paint after FrameWork prewarm + PlanRebuild (never sync Flatten).
+    -- Coalesced first paint: Watch → Footer (no Macro) → Macro idle drain.
+    -- Never SyncActionReadiness(immediate) + RefreshActiveTab on the same open frame.
     if StockPiler4.Ui and StockPiler4.Ui.MarkWatchUiDirty then
         StockPiler4.Ui.MarkWatchUiDirty()
     else
         StockPiler4Window.RequestListRepopulate()
-    end
-    -- Paint active tab from last plan now; dirty flush will refresh when rebuild lands.
-    if StockPiler4Window.RefreshActiveTab then
-        StockPiler4Window.RefreshActiveTab()
     end
     StockPiler4Window.RequestFooterRefresh()
 end

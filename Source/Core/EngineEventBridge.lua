@@ -408,21 +408,21 @@ function Bridge.OnUpdateProcessed(timeElapsed)
             StockPiler4.Refine.OnUpdate(timeElapsed)
         end
 
-        -- Scheduler pump (bag -> FrameWork -> Plan -> Watch UI; Orch tick due)
+        -- Scheduler pump (bag -> FrameWork -> Plan -> intent refresh -> Orch -> Watch)
         if StockPiler4.Scheduler and StockPiler4.Scheduler.OnUpdate then
             StockPiler4.Scheduler.OnUpdate(timeElapsed)
         end
 
-        -- Coalesced macro enable sync (footer/cultivation storms).
-        if StockPiler4.Macro and StockPiler4.Macro.DrainEnabledSync then
-            StockPiler4.Macro.DrainEnabledSync()
-        end
-
-        -- Footer after Scheduler so SkipUiHoldFooter can hold this frame.
+        -- Footer after Scheduler so SkipUiHoldFooter / Watch stagger can hold this frame.
+        -- Macro drain AFTER Footer so RequestEnabledSync from Footer cannot Appearance
+        -- on the same frame (Watch → Footer → Macro idle stagger).
         local Sch = StockPiler4.Scheduler
         local holdFooter = Sch and Sch.SkipUiHoldFooter and Sch.SkipUiHoldFooter() == true
         if not holdFooter and Sch and Sch.FlushPendingFooterRefresh then
             Sch.FlushPendingFooterRefresh()
+        end
+        if StockPiler4.Macro and StockPiler4.Macro.DrainEnabledSync then
+            StockPiler4.Macro.DrainEnabledSync()
         end
         if Sch and Sch.ClearSkipUiHoldFooter then
             Sch.ClearSkipUiHoldFooter()
