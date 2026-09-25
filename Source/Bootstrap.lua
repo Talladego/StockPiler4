@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler4 = StockPiler4 or {}
-StockPiler4.Version = L"0.4.35"
+StockPiler4.Version = L"0.4.36"
 
 local function T(key, tokens)
     return StockPiler4.Util.T(key, tokens)
@@ -99,6 +99,10 @@ end
 
 --- One-shot dump of every plan / bag / diagnostic into uilog (/sp4 dumpall).
 local function DumpAll()
+    local Perf = StockPiler4.Perf
+    if Perf and Perf.SetSpikePhase then
+        Perf.SetSpikePhase("dumpall")
+    end
     local emit = function(msg)
         EmitLog(msg)
     end
@@ -205,6 +209,9 @@ local function DumpAll()
 
     emit("=== dumpall end ===")
     Print(T("boot.dumpall_dumped"))
+    if Perf and Perf.ClearSpikePhase then
+        Perf.ClearSpikePhase("dumpall")
+    end
 end
 
 function StockPiler4.OnSlash(input)

@@ -117,11 +117,19 @@ UPDATE_PROCESSED
 | ~1363ms settle Footer+Macro+RefreshWatch | Watch → Footer (no Macro) → Macro idle drain |
 | ~450–520ms lone Orchestrator.Tick | Intent refresh enqueued; Perf `IntentRefresh*` children |
 
+## 0.4.36 — Spike phase tags (instrumentation only)
+
+Hitch lines (≥250ms) and `/sp4 perf` summary include
+`phase=login|harvestStorm|plantQuiet|quietEnd|executePlant|dumpall|unknown`
+plus `emptyPlots=N additive=N`. Phase is set/cleared at existing arm/disarm
+points only — no quiet/warm-hold or Watch→Footer→Macro / IntentRefresh changes.
+`Grow.ExecutePlant` emits an always-on uilog breadcrumb.
+
 ## Retest notes
 
-1. `/reload` → **v0.4.34**. `/libperf StockPiler4 on 250`.
-2. Login/settle and first `/sp4` Watch open: expect RefreshWatch, Footer, Macro.Appearance on **separate** frames.
-3. AutoGrow plant → soil/water/nutrient → additive cycle with window open on Watch.
+1. `/reload` → **v0.4.36**. `/libperf StockPiler4 on 250`.
+2. Login/settle and first `/sp4` Watch open: expect RefreshWatch, Footer, Macro.Appearance on **separate** frames; spikes show `phase=login` while settling.
+3. AutoGrow plant → soil/water/nutrient → additive cycle with window open on Watch; expect `grow| ExecutePlant` breadcrumbs and spikes tagged `executePlant` / `plantQuiet` / `harvestStorm` / `quietEnd`.
 4. Expect: cult frames without `RefreshWatch`/`Macro.Appearance`; Orch execute frames without `IntentRefresh*`; post-quiet intent drain as named child or Orch.Tick under thr.
-5. `/libperf StockPiler4 summary` — compare vs 0.4.33 settle (~1363ms) and lone Orch.Tick (~450–520ms).
+5. `/libperf StockPiler4 summary` and `/sp4 perf` — confirm phase + emptyPlots/additive on spike lines (including `trail=(none)` when a phase is active).
 6. Watch craftable / plantIntent catch up within ~5s after quiet (warm-hold); planting resumes on the tick after intent drain.

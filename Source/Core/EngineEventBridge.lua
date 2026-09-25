@@ -381,6 +381,13 @@ function Bridge.OnUpdateProcessed(timeElapsed)
         local Perf = StockPiler4.Perf
         if Perf and Perf.OnFrame and Perf.Available ~= true then
             Perf.OnFrame(timeElapsed)
+        elseif Perf and Perf.Available == true and Perf.NoteSpikePhaseFrame then
+            -- LibPerf owns hitch file; companion uilog line carries phase tags.
+            Perf.NoteSpikePhaseFrame(timeElapsed)
+        end
+        -- Stamp active phase into trail early so empty-trail spikes still attribute.
+        if Perf and Perf.StampSpikePhase then
+            Perf.StampSpikePhase()
         end
 
         if StockPiler4.Garden and StockPiler4.Garden.FlushPendingSyncAll then

@@ -631,6 +631,20 @@ function Sch.SuppressInventorySideEffects(ticks)
     end
 end
 
+local function SetSpikePhase(phase)
+    local Perf = StockPiler4.Perf
+    if Perf and Perf.SetSpikePhase then
+        Perf.SetSpikePhase(phase)
+    end
+end
+
+local function ClearSpikePhase(expected)
+    local Perf = StockPiler4.Perf
+    if Perf and Perf.ClearSpikePhase then
+        Perf.ClearSpikePhase(expected)
+    end
+end
+
 function Sch.ArmHarvestStorm(seconds)
     ArmPipelineDebounce()
     seconds = tonumber(seconds) or Sch.HARVEST_STORM_MIN_SEC or 1.5
@@ -650,6 +664,7 @@ function Sch.ArmHarvestStorm(seconds)
     if quietUntil > curQuiet then
         Sch._plantQuietUntil = quietUntil
     end
+    SetSpikePhase("harvestStorm")
 end
 
 function Sch.IsHarvestStorm()
@@ -668,6 +683,13 @@ function Sch.IsHarvestStorm()
         -- + Watch flush into the first post-harvest / replant hitch).
         Sch.SkipPlanThisFrame()
         Sch.SkipUiThisFrame()
+        -- Quiet may still be armed; attribute as plantQuiet until quiet ends.
+        local quietUntil = tonumber(Sch._plantQuietUntil) or 0
+        if quietUntil > 0 and now < quietUntil then
+            SetSpikePhase("plantQuiet")
+        else
+            SetSpikePhase("quietEnd")
+        end
         if Sch.EnqueuePlanRebuild then
             Sch.EnqueuePlanRebuild({ nudge = true })
         end
@@ -688,6 +710,9 @@ function Sch.IsPlantQuiet()
     end
     if now >= untilT then
         Sch._plantQuietUntil = 0
+        -- Quiet-end rebuild / prewarm attribution (instrumentation only).
+        -- Leave quietEnd armed so the hitch OnFrame for this work sees it.
+        SetSpikePhase("quietEnd")
         FlushPendingPrewarmAfterQuiet()
     end
     return false
@@ -708,6 +733,12 @@ function Sch.ArmPlantQuiet(seconds)
     local cur = tonumber(Sch._plantQuietUntil) or 0
     if untilT > cur then
         Sch._plantQuietUntil = untilT
+    end
+    -- Prefer harvestStorm while storm is still live.
+    if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
+        SetSpikePhase("harvestStorm")
+    else
+        SetSpikePhase("plantQuiet")
     end
 end
 
@@ -762,6 +793,7 @@ function Sch.BeginSessionSettle(seconds)
         Sch._sessionSettleUntilFrame = untilFrame
     end
     Sch._sessionSettleArmed = true
+    SetSpikePhase("login")
 end
 
 function Sch.IsSessionSettling()
@@ -799,6 +831,7 @@ local function MaybeFinishSessionSettle()
         return
     end
     Sch._sessionSettleArmed = false
+    ClearSpikePhase("login")
     local Watch = StockPiler4.Watch
     if not (Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() == true) then
         return
