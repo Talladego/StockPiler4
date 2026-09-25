@@ -126,9 +126,6 @@ local function ShouldDeferWatchFlush()
     if Sch and Sch.SkipUiThisFrameActive and Sch.SkipUiThisFrameActive() == true then
         return true
     end
-    if Sch and Sch._skipUiThisFrame == true then
-        return true
-    end
     local windowOpen = DoesWindowExist("StockPiler4Window")
         and WindowGetShowing("StockPiler4Window") == true
     if not windowOpen
@@ -196,14 +193,37 @@ local function OnFooterDirty(payload)
     if type(payload) ~= "table" or payload.immediate ~= true then
         return
     end
+    -- Never SyncActionReadiness under plant quiet / cult SkipUi hold (libperf
+    -- Footer+Macro.Appearance on CultivationUpdated trails). Footer never inlines
+    -- Macro.Appearance — RequestEnabledSync drains later under stagger gates.
+    local Sch = StockPiler4.Scheduler
+    if Sch then
+        if Sch.SkipUiHoldFooter and Sch.SkipUiHoldFooter() == true then
+            return
+        end
+        if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+            return
+        end
+        if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
+            return
+        end
+        if Sch.IsSessionSettling and Sch.IsSessionSettling() == true then
+            return
+        end
+        if Sch.ShouldDeferFooterFlush and Sch.ShouldDeferFooterFlush() == true then
+            return
+        end
+    end
     if StockPiler4Window and StockPiler4Window.SyncActionReadiness then
+        -- immediate = footer chrome now; Macro still request-only.
         StockPiler4Window.SyncActionReadiness({ immediate = true })
     elseif payload.syncMacro == true then
         local Brew = StockPiler4.Brew
-        if StockPiler4.Macro and StockPiler4.Macro.RefreshMacroButtonAppearance then
-            StockPiler4.Macro.RefreshMacroButtonAppearance({
-                canBrew = Brew and Brew.CanBrewNow and Brew.CanBrewNow() == true,
-            })
+        if StockPiler4.Macro and StockPiler4.Macro.RequestEnabledSync then
+            StockPiler4.Macro.RequestEnabledSync(
+                nil,
+                Brew and Brew.CanBrewNow and Brew.CanBrewNow() == true
+            )
         end
     end
 end

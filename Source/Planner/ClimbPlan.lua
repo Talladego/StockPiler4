@@ -119,7 +119,9 @@ function CP.LadderForPlantWatch(spec, plantUid)
 end
 
 --- Watched plant stock resolve (never retargets to Cult-max).
---- climbNeedReq = Cult-max rung when Upgrade Seeds is on (climb destination only).
+--- climbNeedReq = Cult-usable destination when Upgrade Seeds is on
+--- (max(known ladder Cult-max, Cult floor) so SM-fishing continues past
+--- the highest discovered rung).
 function CP.ResolvePlantWatchTarget(watchPlantUid, watchSpec)
     watchPlantUid = tonumber(watchPlantUid) or 0
     local Items = StockPiler4.Items
@@ -150,6 +152,13 @@ function CP.ResolvePlantWatchTarget(watchPlantUid, watchSpec)
         local cultMax = CP.CultMaxNeedReq(ladder)
         if cultMax >= 1 then
             climbNeedReq = cultMax
+        end
+        -- Cult-usable destination is Cult floor. When the known ladder tops
+        -- below that (Livid@150 with Angry/Savage not yet discovered), keep
+        -- climbNeed at floor so Upgrade Seeds keeps SM-fishing.
+        local cultFloor = CP.FloorCultTier(CP.GetCultSkill())
+        if cultFloor > climbNeedReq then
+            climbNeedReq = cultFloor
         end
     end
     local seedUid = 0
@@ -384,10 +393,27 @@ end
 --- Buffer off: at least one Cult-max seed.
 --- Rung with plant but no known seed (Cross s0) is NOT done - keep climbing via
 --- lower plantable rungs / refine until a plantable seed exists and its buffer fills.
+--- Missing needReq rung on a known ladder (aspirational Cult-floor destination
+--- before Angry/Savage discovery) is NOT done - do not treat a lower-tier
+--- fallback seed buffer as arrival.
 local function CultMaxTierBufferFull(ladder, needReq, fallbackPlantUid, fallbackSeedUid)
     needReq = tonumber(needReq) or 0
     if needReq < 1 then
         return false
+    end
+    local hasLadder = type(ladder) == "table" and type(ladder.rungs) == "table" and #ladder.rungs > 0
+    local rungFound = false
+    if hasLadder then
+        for i = 1, #ladder.rungs do
+            if (tonumber(ladder.rungs[i].skillReq) or 0) == needReq then
+                rungFound = true
+                break
+            end
+        end
+        if not rungFound then
+            -- Family known but this Cult-floor tier is not on the ladder yet.
+            return false
+        end
     end
     local seedUid = RungUidsAtNeed(ladder, needReq, fallbackPlantUid, fallbackSeedUid)
     seedUid = tonumber(seedUid) or 0
@@ -601,12 +627,14 @@ function CP.DescribePlantWatchClimb(watchPlantUid)
     end
     out.eligible = out.stocked or out.midClimb
     if out.eligible and climbNeed > watchedReq then
-        -- Plant-watch climb arrives when Cult-max seed buffer is full.
+        -- Plant-watch climb arrives when Cult-max seed buffer is full
+        -- (known Cult-max rung, or aspirational Cult-floor while higher
+        -- rungs are still undiscovered).
         out.pending = HaveTargetRung(ladder, climbNeed, out.plantUid, out.seedUid, {
             requireBufferFull = true,
         }) ~= true
     elseif out.eligible and climbNeed <= watchedReq then
-        -- Nowhere above watched tier on the known ladder.
+        -- Watched tier is already at/above climb destination.
         out.pending = false
     end
     return out
@@ -670,10 +698,11 @@ function CP.WatchesAllowUpgradeClimb()
     if CP.IsEnabled() ~= true then
         return false
     end
-    local SkillUp = StockPiler4.SkillUp
-    if SkillUp and SkillUp.WatchesDone then
-        return SkillUp.WatchesDone() == true
+    local Gates = StockPiler4.SkillUpGates
+    if Gates and Gates.WatchesDone then
+        return Gates.WatchesDone() == true
     end
+
     local Watch = StockPiler4.Watch
     if Watch and Watch.AllEnabledPotionWatchesStocked
         and Watch.AllEnabledPotionWatchesStocked() ~= true
@@ -696,8 +725,13 @@ function CP.ScanUpgradePlant(opts)
         return nil
     end
     local ladder = opts.ladder
-    if type(ladder) ~= "table" and opts.familyKey and SM and SM.GetFamilyLadder then
-        ladder = SM.GetFamilyLadder(opts.familyKey)
+    if type(ladder) ~= "table" and opts.familyKey then
+        local GLF = StockPiler4.GenusLadder
+        if GLF and GLF.GetFamilyLadder then
+            ladder = GLF.GetFamilyLadder(opts.familyKey)
+        elseif SM and SM.GetFamilyLadder then
+            ladder = SM.GetFamilyLadder(opts.familyKey)
+        end
     end
     if type(ladder) == "table" and SM and SM.BestUpgradePlantOnLadder then
         return SM.BestUpgradePlantOnLadder(ladder, climbCap, opts.ownedSeedReq or 0, {
@@ -785,11 +819,22 @@ function CP.PickBestOwnedSeed(opts)
         return nil
     end
     local ladder = opts.ladder
-    if type(ladder) ~= "table" and opts.familyKey and SM and SM.GetFamilyLadder then
-        ladder = SM.GetFamilyLadder(opts.familyKey)
+    if type(ladder) ~= "table" and opts.familyKey then
+        local GLF = StockPiler4.GenusLadder
+        if GLF and GLF.GetFamilyLadder then
+            ladder = GLF.GetFamilyLadder(opts.familyKey)
+        elseif SM and SM.GetFamilyLadder then
+            ladder = SM.GetFamilyLadder(opts.familyKey)
+        end
     end
-    if type(ladder) == "table" and SM and SM.BestOwnedSeedOnLadder then
-        return SM.BestOwnedSeedOnLadder(ladder, climbCap, { mainsOnly = opts.mainsOnly == true })
+    if type(ladder) == "table" then
+        local GL = StockPiler4.GenusLadder
+        if GL and GL.BestOwnedRung then
+            return GL.BestOwnedRung(ladder, climbCap, { mainsOnly = opts.mainsOnly == true })
+        end
+        if SM and SM.BestOwnedSeedOnLadder then
+            return SM.BestOwnedSeedOnLadder(ladder, climbCap, { mainsOnly = opts.mainsOnly == true })
+        end
     end
     return nil
 end
@@ -810,8 +855,15 @@ local function CollectUpgradeTargets()
     local seenPlant = {}
 
     local function LadderFor(spec)
+        local GL = StockPiler4.GenusLadder
+        if GL and GL.GetLadderForSpec then
+            return GL.GetLadderForSpec(spec)
+        end
         if SM.GetGenusLadderForSpec then
             return SM.GetGenusLadderForSpec(spec)
+        end
+        if GL and GL.GetFamilyLadderForSpec then
+            return GL.GetFamilyLadderForSpec(spec)
         end
         return SM.GetFamilyLadderForSpec and SM.GetFamilyLadderForSpec(spec) or nil
     end
@@ -905,11 +957,16 @@ local function CollectUpgradeTargets()
         }
     end
 
-    -- Potion / balanced demand (growable mats short).
-    local DP = StockPiler4.DemandPlan
-    local demand = DP and DP.Build and DP.Build() or nil
-    if type(demand) ~= "table" and RS and RS.BuildBalancedSpecDemand then
-        demand = RS.BuildBalancedSpecDemand()
+    -- Potion / balanced demand (growable mats short). Prefer plan.demand.
+    local demand = nil
+    local PS = StockPiler4.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    if type(plan) == "table" and type(plan.demand) == "table" then
+        demand = plan.demand
+    end
+    if type(demand) ~= "table" then
+        local DP = StockPiler4.DemandPlan
+        demand = DP and DP.Build and DP.Build() or nil
     end
     if type(demand) == "table" then
         for _, row in pairs(demand) do
@@ -961,22 +1018,19 @@ local function CollectUpgradeTargets()
 end
 
 local function UpgradeTargetsCacheKey()
-    local Inv = StockPiler4.Inventory
     local Watch = StockPiler4.Watch
-    local snapGen = 0
     local watchGen = 0
-    if Inv and Inv.GetSnapGen then
-        snapGen = tonumber(Inv.GetSnapGen()) or 0
-    end
     if Watch and Watch.GetGen then
         watchGen = tonumber(Watch.GetGen()) or 0
     end
+    -- Structural climb targets (which specs). Bag snapGen must not bust this —
+    -- every Inv.ApplySlots rebuilt CollectUpgradeTargets + DP.Build (libperf).
     -- Cult floor gates ClimbCap; include so skill-ups invalidate without bag churn.
     local cult = 0
     if CP.GetCultSkill then
         cult = math.floor((tonumber(CP.GetCultSkill()) or 0) / 25)
     end
-    return tostring(snapGen) .. ":" .. tostring(watchGen) .. ":" .. tostring(cult)
+    return tostring(watchGen) .. ":" .. tostring(cult)
         .. ":" .. tostring(CP.IsEnabled() == true)
         .. ":" .. tostring(CP.WatchesAllowUpgradeClimb() == true)
 end

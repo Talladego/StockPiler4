@@ -661,13 +661,13 @@ local function GrowReserveForSpec(spec)
     end
     -- Only reserve when AutoGrow / seed buffer is in play, or SkillUp may burn plants.
     local skillUpActive = false
-    local SkillUpMod = StockPiler4.SkillUp
-    if SkillUpMod then
-        if SkillUpMod.ShouldCultGrowForSkillUp and SkillUpMod.ShouldCultGrowForSkillUp() == true then
+    local Gates = StockPiler4.SkillUpGates
+    if Gates then
+        if Gates.ShouldCultGrowForSkillUp and Gates.ShouldCultGrowForSkillUp() == true then
             skillUpActive = true
-        elseif SkillUpMod.IsApoEnabled and SkillUpMod.IsApoEnabled() == true then
+        elseif Gates.IsApoEnabled and Gates.IsApoEnabled() == true then
             skillUpActive = true
-        elseif SkillUpMod.IsCultEnabled and SkillUpMod.IsCultEnabled() == true then
+        elseif Gates.IsCultEnabled and Gates.IsCultEnabled() == true then
             skillUpActive = true
         end
     end
@@ -731,12 +731,15 @@ local function GrowReserveForSpec(spec)
         if minBuf > headroom then
             headroom = minBuf
         end
-        if SkillUpMod and SkillUpMod.ShouldCultGrowForSkillUp
-            and SkillUpMod.ShouldCultGrowForSkillUp() == true and SkillUpMod.SeedDeficit
+        if Gates and Gates.ShouldCultGrowForSkillUp
+            and Gates.ShouldCultGrowForSkillUp() == true
         then
-            local deficit = tonumber(SkillUpMod.SeedDeficit(seedUid)) or 0
-            if deficit > headroom then
-                headroom = deficit
+            local CSP = StockPiler4.CultSkillPlan
+            if CSP and CSP.SeedDeficit then
+                local deficit = tonumber(CSP.SeedDeficit(seedUid)) or 0
+                if deficit > headroom then
+                    headroom = deficit
+                end
             end
         end
     end
@@ -2708,110 +2711,4 @@ end
 
 function RS.OutputQuality(out)
     return OutputQuality(out)
-end
-
-----------------------------------------------------------------
--- Planner shims - Grow/Refine call RecipeSpec; demand lives on Planner
-----------------------------------------------------------------
-
-local function PlannerMod()
-    return StockPiler4.Planner
-end
-
-function RS.BuildBalancedSpecDemand(opts)
-    local DP = StockPiler4.DemandPlan
-    if DP and DP.Build then
-        return DP.Build(opts)
-    end
-    local P = PlannerMod()
-    if P and P.BuildBalancedSpecDemand then
-        return P.BuildBalancedSpecDemand(opts)
-    end
-    return {}
-end
-
-function RS.CollectAutoGrowFocus()
-    local P = PlannerMod()
-    if P and P.CollectAutoGrowFocus then
-        return P.CollectAutoGrowFocus()
-    end
-    return { maxBottleGap = nil, minCraftable = nil, watches = {} }
-end
-
-function RS.CollectAutoBuyFocus()
-    local P = PlannerMod()
-    if P and P.CollectAutoBuyFocus then
-        return P.CollectAutoBuyFocus()
-    end
-    return { maxBottleGap = nil, minCraftable = nil, watches = {} }
-end
-
-function RS.WatchStillNeedsGrow(potion, recipe, target, watchKey)
-    local P = PlannerMod()
-    if P and P.WatchStillNeedsGrow then
-        return P.WatchStillNeedsGrow(potion, recipe, target, watchKey) == true
-    end
-    -- Lean fallback: uncovered deficit.
-    target = tonumber(target) or 0
-    if target <= 0 or type(potion) ~= "table" then
-        return false
-    end
-    local uid = tonumber(potion.outputUid) or 0
-    local have = 0
-    if StockPiler4.Inventory and StockPiler4.Inventory.CountByUid and uid > 0 then
-        have = tonumber(StockPiler4.Inventory.CountByUid(uid)) or 0
-    end
-    return have < target
-end
-
-function RS.FocusSpecKeys(focus)
-    local P = PlannerMod()
-    if P and P.FocusSpecKeys then
-        return P.FocusSpecKeys(focus)
-    end
-    return {}
-end
-
-function RS.FocusBottleneckForSpec(specKey, focus, demand)
-    local P = PlannerMod()
-    if P and P.FocusBottleneckForSpec then
-        return P.FocusBottleneckForSpec(specKey, focus, demand)
-    end
-    return 0, 0
-end
-
-function RS.CollectAutoGrowSeedLines()
-    local P = PlannerMod()
-    if P and P.CollectAutoGrowSeedLines then
-        return P.CollectAutoGrowSeedLines()
-    end
-    return {}
-end
-
---- True when Seed Buffer is on and any growable refinable recipe line for this watch
---- is below the buffer (bag + in-ground + outstanding). Memoized per bag snapGen.
---- opts.seedUids: known seed uniqueIDs from plan tip / statusTipSlots - prefer these and
---- skip SeedMap.ResolveSeedForSpec / FindPlantUidForSpec (live Watch hitch path).
-function RS.WatchHasSeedBufferShort(recipe, opts)
-    local DP = StockPiler4.DemandPlan
-    if DP and DP.WatchHasSeedBufferShort then
-        return DP.WatchHasSeedBufferShort(recipe, opts) == true
-    end
-    return false
-end
-
-function RS.ShouldAutoGrowPotion(potionKey, watch)
-    local Caps = StockPiler4.TradeSkillCaps
-    if Caps and Caps.CanAutoGrow and Caps.CanAutoGrow() ~= true then
-        return false
-    end
-    local Watch = StockPiler4.Watch
-    if Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() ~= true then
-        return false
-    end
-    if type(watch) ~= "table" then
-        local watches = Watch and Watch.GetWatches and Watch.GetWatches() or {}
-        watch = type(watches) == "table" and watches[tostring(potionKey or "")] or nil
-    end
-    return type(watch) == "table" and watch.enabled == true and watch.autoGrow == true
 end

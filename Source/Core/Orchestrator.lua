@@ -70,6 +70,14 @@ local function TryBuyTick(opId)
 end
 
 local function HasPendingBufferRefine()
+    local Refine = StockPiler4.Refine
+    -- Prefer O(1) peek on the orch hot path; full BufferFlags rebuild only when
+    -- no cache (first tick / after invalidate).
+    if Refine and Refine.HasBufferFlagsCache and Refine.HasBufferFlagsCache() == true
+        and Refine.PeekCachedBufferPending
+    then
+        return Refine.PeekCachedBufferPending() == true
+    end
     local Grow = StockPiler4.Grow
     if Grow and Grow.HasPendingBufferRefine and Grow.HasPendingBufferRefine() == true then
         return true
@@ -169,9 +177,12 @@ local function TryExecutePlant(opId, opts)
     SetPhase("planting", opts.phaseReason or "auto")
     -- Any successful plant means plots are fillable again.
     Orch.ClearFillBlocked()
+    -- ExecutePlant already ArmPlantQuiet + InvalidatePlantQueue. Do not WakeAutoGrow
+    -- here — that re-invalidated the plant queue and piled BufferFlags/CollectIntents
+    -- onto the plant frame (libperf Orch+ExecutePlant+CollectIntents trails).
     local Sch = StockPiler4.Scheduler
-    if Sch and Sch.WakeAutoGrow then
-        Sch.WakeAutoGrow()
+    if Sch and Sch.SetAutoGrowIdle then
+        Sch.SetAutoGrowIdle(false)
     end
     return true
 end
@@ -527,6 +538,20 @@ function Orch._TickBody()
             Sch.SetAutoGrowIdle(false)
         end
     elseif canPlant and not hasSeeds then
+        -- Reload/snap often leaves plantIntent nil while Grow cache is dirty;
+        -- enqueue snapshot intent refresh (never PickPlantJob on the execute frame).
+        local Planner = StockPiler4.Planner
+        if Planner and Planner.NeedsPlantIntentRefresh
+            and Planner.NeedsPlantIntentRefresh() == true
+        then
+            if Sch and Sch.EnqueuePlantIntentRefresh then
+                Sch.EnqueuePlantIntentRefresh()
+            elseif Planner.RefreshPlantRefineIntentsNow then
+                -- Fallback only if Scheduler API missing; still skip plant this tick.
+                Planner.RefreshPlantRefineIntentsNow()
+            end
+            -- Do not TryExecutePlant this tick — intent drain is one-heavy after quiet.
+        end
         if HasPendingBufferRefine() or usRefineFirst then
             if not usRefineFirst and Orch._seedBufferRefineArmed ~= true
                 and StockPiler4.Refine and StockPiler4.Refine.MarkRefineDue
@@ -559,9 +584,7 @@ function Orch._TickBody()
         end
         if added then
             SetPhase("planting", "additive")
-            if Sch and Sch.WakeAutoGrow then
-                Sch.WakeAutoGrow()
-            end
+            -- TryAdditive arms plant quiet + fast ticks; no WakeAutoGrow.
             EndTick()
             return
         end

@@ -183,12 +183,12 @@ local function SettingsHash()
         hash = hash + (Caps.GetCultSkill and Caps.GetCultSkill() or 0) * 11
         hash = hash + (Caps.GetApoSkill and Caps.GetApoSkill() or 0) * 13
     end
-    local SkillUp = StockPiler4.SkillUp
-    if SkillUp then
-        if SkillUp.IsCultEnabled and SkillUp.IsCultEnabled() == true then
+    local Gates = StockPiler4.SkillUpGates
+    if Gates then
+        if Gates.IsCultEnabled and Gates.IsCultEnabled() == true then
             hash = hash + 17
         end
-        if SkillUp.IsApoEnabled and SkillUp.IsApoEnabled() == true then
+        if Gates.IsApoEnabled and Gates.IsApoEnabled() == true then
             hash = hash + 19
         end
     end
@@ -506,12 +506,12 @@ local function FinishWarmHaveSlice()
     Planner._warmHaveSlice = nil
     if type(slice) ~= "table" or type(slice.pending) ~= "table" then
         MarkHaveCacheWarmed(CurrentSnapGen())
-        return
+        return "done"
     end
     local cache, snapGen = EnsureHaveCacheForSnap()
     if snapGen ~= (tonumber(slice.snapGen) or -1) then
-        -- Snap moved mid-slice; full warm next prewarm.
-        return
+        -- Snap moved mid-slice; FrameWork restarts collect (no cold PlanRebuild).
+        return "restart"
     end
     PerfMark("WarmHave.miss")
     local pending = slice.pending
@@ -564,6 +564,7 @@ local function FinishWarmHaveSlice()
         cache[entry.key] = tonumber(totals[entry.key]) or 0
     end
     MarkHaveCacheWarmed(snapGen)
+    return "done"
 end
 
 local function CountItemsMatchingSpec(spec, opts)
@@ -864,15 +865,14 @@ local function ResolveWatchRow(watchKey, watch)
 end
 
 local function WatchWantsAutoGrow(watchKey, watch)
-    local RS = RecipeSpec()
     watch = ResolveWatchRow(watchKey, watch)
-    if RS and RS.ShouldAutoGrowPotion then
-        return RS.ShouldAutoGrowPotion(watchKey, watch) == true
+    local Watch = StockPiler4.Watch
+    if Watch and Watch.ShouldAutoGrowPotion then
+        return Watch.ShouldAutoGrowPotion(watchKey, watch) == true
     end
     if type(watch) ~= "table" or watch.enabled ~= true then
         return false
     end
-    local Watch = StockPiler4.Watch
     if Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() ~= true then
         return false
     end
@@ -1007,8 +1007,8 @@ local function CollectFocus(mode)
                                 local PlannerMod = StockPiler4.Planner
                                 if PlannerMod and PlannerMod.WatchStillNeedsGrow then
                                     still = PlannerMod.WatchStillNeedsGrow(potion, recipe, target, watchKey) == true
-                                elseif RS.WatchStillNeedsGrow then
-                                    still = RS.WatchStillNeedsGrow(potion, recipe, target, watchKey) == true
+                                else
+                                    still = true
                                 end
                             end
                             if still then
@@ -1248,10 +1248,15 @@ local function FocusBottleneckForSpec(specKey, focus, demand)
 end
 
 local function CollectAutoGrowSeedLines()
-    local snapGen = CurrentSnapGen()
+    -- Structural seed lines (uids/specs). Bag snapGen must not bust this
+    -- cache — BufferFlags/CollectIntents hit it every orch tick.
     local Watch = StockPiler4.Watch
     local watchGen = Watch and Watch.GetGen and Watch.GetGen() or 0
-    local cacheKey = tostring(snapGen) .. ":" .. tostring(watchGen)
+    local knowGen = 0
+    if StockPiler4.Knowledge and StockPiler4.Knowledge.GetGen then
+        knowGen = tonumber(StockPiler4.Knowledge.GetGen()) or 0
+    end
+    local cacheKey = tostring(watchGen) .. ":" .. tostring(knowGen)
     if type(Planner._seedLinesCache) == "table" and Planner._seedLinesCacheKey == cacheKey then
         return Planner._seedLinesCache
     end
@@ -2550,9 +2555,7 @@ local function BuildSeedBufferTipData(opts)
     local rows = {}
     local RS = RecipeSpec()
     local lines = {}
-    if RS and RS.CollectAutoGrowSeedLines then
-        lines = RS.CollectAutoGrowSeedLines() or {}
-    elseif Planner.CollectAutoGrowSeedLines then
+    if Planner.CollectAutoGrowSeedLines then
         lines = Planner.CollectAutoGrowSeedLines() or {}
     end
     local byKey = {}
@@ -3180,9 +3183,9 @@ local function BuildWatchRows(ctx)
             end
         end
     end
-    local SkillUp = StockPiler4.SkillUp
-    if SkillUp and SkillUp.BuildWatchStatusRows then
-        local skillRows = SkillUp.BuildWatchStatusRows() or {}
+    local SWS = StockPiler4.SkillUpWatchStatus
+    if SWS and SWS.BuildWatchStatusRows then
+        local skillRows = SWS.BuildWatchStatusRows() or {}
         for i = 1, #skillRows do
             local sr = skillRows[i]
             if type(sr) == "table" then
@@ -3262,7 +3265,7 @@ local function RefreshSkillUpWatchRows(rows, opts)
     if type(rows) ~= "table" or #rows == 0 then
         return false
     end
-    local SkillUp = StockPiler4.SkillUp
+    local SWS = StockPiler4.SkillUpWatchStatus
     local UpgradeSeed = StockPiler4.UpgradeSeed
     local fresh = {}
     if UpgradeSeed and UpgradeSeed.BuildWatchStatusRows then
@@ -3271,13 +3274,13 @@ local function RefreshSkillUpWatchRows(rows, opts)
             fresh[#fresh + 1] = up[i]
         end
     end
-    if SkillUp and SkillUp.BuildWatchStatusRows then
-        local sk = SkillUp.BuildWatchStatusRows() or {}
+    if SWS and SWS.BuildWatchStatusRows then
+        local sk = SWS.BuildWatchStatusRows() or {}
         for i = 1, #sk do
             fresh[#fresh + 1] = sk[i]
         end
     end
-    if #fresh < 1 and not (SkillUp and SkillUp.BuildWatchStatusRows)
+    if #fresh < 1 and not (SWS and SWS.BuildWatchStatusRows)
         and not (UpgradeSeed and UpgradeSeed.BuildWatchStatusRows)
     then
         return false
@@ -3772,36 +3775,129 @@ end
 --- Cheap/GardenPatch must refresh plant/refine intents: plot empty/fill flips
 --- plantIntent while RecipeStructuralKey stays the same. Stale nil plantIntent
 --- left Orch idle with empty plots until a force Build (/sp4 dumpall).
+local function PlantIntentHasSeed(plan)
+    return type(plan) == "table" and type(plan.plantIntent) == "table"
+        and (tonumber(plan.plantIntent.seedUid) or 0) > 0
+end
+
 local function RefreshPlantRefineIntents(stale)
     if type(stale) ~= "table" then
         return
     end
+    PerfBegin("IntentRefresh")
     local PlantPlan = StockPiler4.PlantPlan
     local Grow = StockPiler4.Grow
-    local plantJob = nil
-    if PlantPlan and PlantPlan.PickPlantJob then
-        plantJob = PlantPlan.PickPlantJob({ demand = stale.demand })
-        if Grow and Grow.MarkPlantJobProbed then
-            Grow.MarkPlantJobProbed(plantJob)
+    local needPlantPick = Grow and Grow.HasEmptyPlot and Grow.HasEmptyPlot() == true
+    -- Keep a seeded plantIntent when plots are full (no PickPlantCandidate).
+    if needPlantPick or not PlantIntentHasSeed(stale) then
+        local plantJob = nil
+        if PlantPlan and PlantPlan.PickPlantJob then
+            PerfBegin("IntentRefresh.PickPlant")
+            plantJob = PlantPlan.PickPlantJob({ demand = stale.demand })
+            PerfEnd("IntentRefresh.PickPlant")
+            if Grow and Grow.MarkPlantJobProbed then
+                Grow.MarkPlantJobProbed(plantJob)
+            end
+        elseif Grow and Grow.GetPlantJob then
+            PerfBegin("IntentRefresh.PickPlant")
+            plantJob = Grow.GetPlantJob()
+            PerfEnd("IntentRefresh.PickPlant")
         end
-    elseif Grow and Grow.GetPlantJob then
-        plantJob = Grow.GetPlantJob()
+        if PlantPlan and PlantPlan.BuildPlantIntent then
+            stale.plantIntent = PlantPlan.BuildPlantIntent(plantJob)
+        else
+            stale.plantIntent = nil
+        end
     end
-    if PlantPlan and PlantPlan.BuildPlantIntent then
-        stale.plantIntent = PlantPlan.BuildPlantIntent(plantJob)
-    else
-        stale.plantIntent = nil
+    -- Skip CollectIntents/BufferFlags when buffer not pending and refine idle.
+    local Refine = StockPiler4.Refine
+    local needRefine = false
+    if Refine then
+        if Refine.IsDirty and Refine.IsDirty() == true then
+            needRefine = true
+        elseif Refine.PeekCachedBufferPending and Refine.PeekCachedBufferPending() == true then
+            needRefine = true
+        end
+    end
+    if not needRefine then
+        PerfEnd("IntentRefresh")
+        return
     end
     local refineIntent = nil
-    local Refine = StockPiler4.Refine
     if Refine and Refine.CollectIntents then
+        PerfBegin("IntentRefresh.Collect")
         local intents = Refine.CollectIntents({ demand = stale.demand })
+        PerfEnd("IntentRefresh.Collect")
         if type(intents) == "table" and #intents > 0 and type(intents[1]) == "table" then
             refineIntent = intents[1]
         end
     end
     stale.refineIntent = refineIntent
     stale.refineIntents = refineIntent and { refineIntent } or {}
+    PerfEnd("IntentRefresh")
+end
+
+--- Republish current snapshot with fresh plant/refine intents (no full Build).
+--- Used when bags settle after reload while cache key still matches a nil-intent plan.
+--- Prefer Scheduler.EnqueuePlantIntentRefresh so this never shares a frame with
+--- Grow.ExecutePlant / TryAdditive (libperf Orchestrator.Tick unmarked trails).
+function Planner.RefreshPlantRefineIntentsNow()
+    PerfBegin("IntentRefresh.Now")
+    local PS = StockPiler4.PlanSnapshot
+    local stale = PS and PS.Get and PS.Get()
+    if type(stale) ~= "table" then
+        local Sch = StockPiler4.Scheduler
+        if Sch and Sch.EnqueuePlanRebuild then
+            Sch.EnqueuePlanRebuild({ nudge = true })
+        end
+        PerfEnd("IntentRefresh.Now")
+        return false
+    end
+    local before = PlantIntentHasSeed(stale)
+    local plan = ClonePlanForPatch(stale)
+    if type(plan) ~= "table" then
+        PerfEnd("IntentRefresh.Now")
+        return false
+    end
+    RefreshPlantRefineIntents(plan)
+    local after = PlantIntentHasSeed(plan)
+    local refineBeforeUid = type(stale.refineIntent) == "table"
+        and (tonumber(stale.refineIntent.uniqueID or stale.refineIntent.plantUid) or 0) or 0
+    local refineAfterUid = type(plan.refineIntent) == "table"
+        and (tonumber(plan.refineIntent.uniqueID or plan.refineIntent.plantUid) or 0) or 0
+    local beforeUid = before and (tonumber(stale.plantIntent.seedUid) or 0) or 0
+    local afterUid = after and (tonumber(plan.plantIntent.seedUid) or 0) or 0
+    if beforeUid == afterUid and refineBeforeUid == refineAfterUid then
+        PerfEnd("IntentRefresh.Now")
+        return false
+    end
+    local key = RefreshStaleCtx(plan)
+    local planGen = (tonumber(Planner._planGen) or 0) + 1
+    Planner._planGen = planGen
+    plan.planGen = planGen
+    plan.cacheKey = key
+    plan.builtAt = (type(GetGameTime) == "function" and GetGameTime()) or 0
+    PublishPlan(plan, key, { intentRefresh = true })
+    PerfEnd("IntentRefresh.Now")
+    return after == true or refineAfterUid > 0
+end
+
+--- True when AutoGrow has empty-plot work but snapshot plantIntent has no seed.
+function Planner.NeedsPlantIntentRefresh()
+    local Watch = StockPiler4.Watch
+    if not (Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() == true) then
+        return false
+    end
+    local Grow = StockPiler4.Grow
+    if not (Grow and Grow.HasEmptyPlot and Grow.HasEmptyPlot() == true) then
+        return false
+    end
+    local PS = StockPiler4.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    if type(plan) ~= "table" then
+        return true
+    end
+    return PlantIntentHasSeed(plan) ~= true
 end
 
 local function TryCheapRebuild()
@@ -3823,7 +3919,11 @@ local function TryCheapRebuild()
         PerfEnd("Planner.CheapRebuild")
         return nil
     end
-    PatchWatchRowsLiveCounts(plan.rows, { syncSnapshot = false })
+    -- Never sync WarmHave.miss inside CheapRebuild — FrameWork prewarm owns bag walks.
+    PatchWatchRowsLiveCounts(plan.rows, {
+        syncSnapshot = false,
+        allowWarmHave = false,
+    })
     plan.seedBufferTipData = BuildSeedBufferTipData({
         previous = plan.seedBufferTipData,
     })
@@ -3901,7 +4001,10 @@ local function BuildFull(opts)
     PerfBegin("Build.WarmHave")
     if IsHaveCacheWarmForSnap() then
         -- prewarm hit
+    elseif HoldHaveCacheQuiet() then
+        EnsureHaveCacheForSnap()
     else
+        -- Prefer FrameWork slice; sync miss only when warm-hold already expired.
         WarmSpecHaveCacheForWatches()
     end
     PerfEnd("Build.WarmHave")
@@ -3917,13 +4020,16 @@ local function BuildFull(opts)
     local PlantPlan = StockPiler4.PlantPlan
     local Grow = StockPiler4.Grow
     local plantJob = nil
-    if PlantPlan and PlantPlan.PickPlantJob then
-        plantJob = PlantPlan.PickPlantJob({ demand = demand })
-        if Grow and Grow.MarkPlantJobProbed then
-            Grow.MarkPlantJobProbed(plantJob)
+    local needPlantPick = Grow and Grow.HasEmptyPlot and Grow.HasEmptyPlot() == true
+    if needPlantPick then
+        if PlantPlan and PlantPlan.PickPlantJob then
+            plantJob = PlantPlan.PickPlantJob({ demand = demand })
+            if Grow and Grow.MarkPlantJobProbed then
+                Grow.MarkPlantJobProbed(plantJob)
+            end
+        elseif Grow and Grow.GetPlantJob then
+            plantJob = Grow.GetPlantJob()
         end
-    elseif Grow and Grow.GetPlantJob then
-        plantJob = Grow.GetPlantJob()
     end
     local plantIntent = PlantPlan and PlantPlan.BuildPlantIntent and PlantPlan.BuildPlantIntent(plantJob) or nil
     local BuyPlan = StockPiler4.BuyPlan
@@ -3932,7 +4038,11 @@ local function BuildFull(opts)
     local brewIntent = BrewPlan and BrewPlan.BuildIntent and BrewPlan.BuildIntent({ rows = rows }) or nil
     local refineIntent = nil
     local Refine = StockPiler4.Refine
-    if Refine and Refine.CollectIntents then
+    local needRefine = Refine and (
+        (Refine.IsDirty and Refine.IsDirty() == true)
+        or (Refine.PeekCachedBufferPending and Refine.PeekCachedBufferPending() == true)
+    )
+    if needRefine and Refine and Refine.CollectIntents then
         local intents = Refine.CollectIntents({ demand = demand })
         if type(intents) == "table" and #intents > 0 and type(intents[1]) == "table" then
             refineIntent = intents[1]

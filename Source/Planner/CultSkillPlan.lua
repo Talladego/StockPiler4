@@ -7,8 +7,16 @@ StockPiler4 = StockPiler4 or {}
 StockPiler4.CultSkillPlan = StockPiler4.CultSkillPlan or {}
 local CSP = StockPiler4.CultSkillPlan
 
-local function SkillUpMod()
-    return StockPiler4.SkillUp
+local function Gates()
+    return StockPiler4.SkillUpGates
+end
+
+local function WR()
+    return StockPiler4.WatchReserves
+end
+
+local function ASP()
+    return StockPiler4.ApoSkillPlan
 end
 
 local function ClimbEconomy()
@@ -16,15 +24,13 @@ local function ClimbEconomy()
 end
 
 local function MirrorStallToSkillUp()
-    local SU = StockPiler4.SkillUp
-    if type(SU) == "table" then
-        SU._stallLatch = CSP._stallLatch
-    end
+    -- Stall latch lives on CSP.
 end
 
 CSP._stallLatch = nil
 
-local function SeedSkillReq(item)
+--- Crafting skill requirement from a seed/plant sample or catalog row.
+function CSP.SeedSkillReq(item)
     if type(item) ~= "table" then
         return 0
     end
@@ -33,6 +39,10 @@ local function SeedSkillReq(item)
         req = tonumber(item.bonuses[9]) or 0
     end
     return req
+end
+
+local function SeedSkillReq(item)
+    return CSP.SeedSkillReq(item)
 end
 
 local function LooksNonMainSeed(item, plantSpec)
@@ -168,7 +178,8 @@ local function PickBestBagSeedViaClimbPlan(targetMax)
     local Inv = StockPiler4.Inventory
     local Refine = StockPiler4.Refine
     local Items = StockPiler4.Items
-    if not (CE and CE.PickBestOwnedSeed and SM and SM.GetGenusLadder and Inv and Inv.ForEachItem) then
+    local GL = StockPiler4.GenusLadder
+    if not (CE and CE.PickBestOwnedSeed and ((GL and GL.GetLadder) or (SM and SM.GetGenusLadder)) and Inv and Inv.ForEachItem) then
         return nil
     end
     local genera = {}
@@ -204,7 +215,8 @@ local function PickBestBagSeedViaClimbPlan(targetMax)
     local best = nil
     local bestScore = -1
     for genus, _ in pairs(genera) do
-        local ladder = SM.GetGenusLadder(genus)
+        local ladder = (GL and GL.GetLadder and GL.GetLadder(genus))
+            or (SM.GetGenusLadder and SM.GetGenusLadder(genus))
         if type(ladder) == "table" then
             local pick = CE.PickBestOwnedSeed({
                 ladder = ladder,
@@ -227,14 +239,14 @@ local function PickBestBagSeedViaClimbPlan(targetMax)
 end
 
 function CSP.PickBestBagSeed()
-    local cult = SkillUpMod().GetCultSkill()
+    local cult = Gates().GetCultSkill()
     if cult <= 0 then
         return nil
     end
-    if cult >= (SkillUpMod().CULT_MAX or 200) and SkillUpMod().IsApoEnabled() ~= true then
+    if cult >= (Gates().CULT_MAX or 200) and Gates().IsApoEnabled() ~= true then
         return nil
     end
-    local targetMax = SkillUpMod().TargetMaxSkill()
+    local targetMax = Gates().TargetMaxSkill()
     if targetMax < 1 then
         targetMax = 1
     end
@@ -302,7 +314,7 @@ function CSP.PickBestBagSeed()
 end
 
 --- Seed budget - ClimbPlan facade over Refine.GetSeedBudget.
-local function SeedBudget(seedUid)
+function CSP.SeedBudget(seedUid)
     local CE = ClimbEconomy()
     if CE and CE.GetSeedBudget then
         return CE.GetSeedBudget(seedUid)
@@ -324,11 +336,15 @@ local function SeedBudget(seedUid)
     }
 end
 
+local function SeedBudget(seedUid)
+    return CSP.SeedBudget(seedUid)
+end
+
 --- True when SkillUp should refine before planting (upgrade or buffer fill).
 --- Used by PickPlantJob hold and Refine.ShouldAllowRefineNow so plant-first
 --- cannot starve a live refine path.
 function CSP.PreferRefineOverPlant()
-    if SkillUpMod().ShouldCultPlant() ~= true then
+    if Gates().ShouldCultPlant() ~= true then
         return false
     end
     if CSP.HasUpgradePlant() == true then
@@ -353,7 +369,7 @@ function CSP.PreferRefineOverPlant()
 end
 
 function CSP.PickPlantJob()
-    if SkillUpMod().ShouldCultPlant() ~= true then
+    if Gates().ShouldCultPlant() ~= true then
         return nil
     end
     -- Hold planting while refine can make progress (upgrade or buffer fill).
@@ -411,9 +427,9 @@ function CSP.PickPlantJob()
         end
     end
     -- Never plant seeds still claimed by short enabled watches.
-    local watchSeedNeed = SkillUpMod().WatchDemandReserve(seedUid)
+    local watchSeedNeed = WR().WatchDemandReserve(seedUid)
     if plantUid > 0 then
-        local plantNeed = SkillUpMod().WatchDemandReserve(plantUid)
+        local plantNeed = WR().WatchDemandReserve(plantUid)
         if plantNeed > watchSeedNeed then
             watchSeedNeed = plantNeed
         end
@@ -442,8 +458,8 @@ function CSP.PickPlantJob()
             seedUid, live, headroom, empty, plantable
         ))
     end
-    SkillUpMod()._lastSeedUid = seedUid
-    SkillUpMod()._lastPlantUid = plantUid
+    CSP._lastSeedUid = seedUid
+    CSP._lastPlantUid = plantUid
     return {
         seedUid = seedUid,
         plantUid = plantUid,
@@ -496,10 +512,10 @@ end
 --- Uses FloorCultTier (not TargetMaxSkill) so lucky crits above the Apo pace
 --- can still be refined into seeds; planting stays capped by TargetMaxSkill.
 function CSP.ScanBestRefinePlant()
-    local cult = SkillUpMod().GetCultSkill()
-    local targetMax = SkillUpMod().FloorCultTier(cult)
+    local cult = Gates().GetCultSkill()
+    local targetMax = Gates().FloorCultTier(cult)
     if targetMax < 1 then
-        targetMax = SkillUpMod().TargetMaxSkill()
+        targetMax = Gates().TargetMaxSkill()
     end
     if targetMax < 1 then
         targetMax = 1
@@ -520,7 +536,7 @@ end
 --- True when a higher-tier plant can *actually* refine into seeds now.
 --- A lone upgrade plant that fails PlantRefineSurplus must not block planting.
 function CSP.HasUpgradePlant()
-    if SkillUpMod().ShouldCultPlant() ~= true then
+    if Gates().ShouldCultPlant() ~= true then
         return false
     end
     local plant = CSP.ScanBestRefinePlant()
@@ -603,8 +619,8 @@ function CSP.PickRefineTarget()
         }
     end
 
-    local seedUid = tonumber(SkillUpMod()._lastSeedUid) or 0
-    local plantUid = tonumber(SkillUpMod()._lastPlantUid) or 0
+    local seedUid = tonumber(CSP._lastSeedUid) or 0
+    local plantUid = tonumber(CSP._lastPlantUid) or 0
     if seedUid > 0 then
         if plantUid <= 0 and SM and SM.PrimaryPlantForSeed then
             plantUid = tonumber(SM.PrimaryPlantForSeed(seedUid)) or 0
@@ -683,7 +699,7 @@ function CSP.RefineUsesForTarget(target)
     if plantUid > 0 and Inv and Inv.CountByUid then
         bagCount = tonumber(Inv.CountByUid(plantUid)) or 0
     end
-    local surplus = SkillUpMod().PlantRefineSurplus(plantUid, seedUid, bagCount)
+    local surplus = WR().PlantRefineSurplus(plantUid, seedUid, bagCount)
     if surplus < 1 then
         return 0, nil
     end
@@ -723,7 +739,7 @@ function CSP.AppendRefineIntents(intents, appendFn)
     if type(intents) ~= "table" or type(appendFn) ~= "function" then
         return
     end
-    if SkillUpMod().ShouldCultPlant() ~= true then
+    if Gates().ShouldCultPlant() ~= true then
         return
     end
     local target = CSP.PickRefineTarget()
@@ -731,8 +747,8 @@ function CSP.AppendRefineIntents(intents, appendFn)
     if (tonumber(uses) or 0) < 1 or type(info) ~= "table" then
         return
     end
-    SkillUpMod()._lastSeedUid = info.seedUid
-    SkillUpMod()._lastPlantUid = info.plantUid
+    CSP._lastSeedUid = info.seedUid
+    CSP._lastPlantUid = info.plantUid
     appendFn({
         spec = info.spec,
         seedUid = info.seedUid,
@@ -757,11 +773,11 @@ function CSP.ResolveBuySeedTarget()
         return {
             seedUid = tonumber(pick.seedUid) or 0,
             skillReq = tonumber(pick.skillReq) or 0,
-            targetMax = SkillUpMod().TargetMaxSkill(),
+            targetMax = Gates().TargetMaxSkill(),
         }
     end
 
-    local targetMax = SkillUpMod().TargetMaxSkill()
+    local targetMax = Gates().TargetMaxSkill()
     if targetMax < 1 then
         targetMax = 1
     end
@@ -849,7 +865,7 @@ end
 --- Buy when SeedDeficit >= 1 for the chosen line (plots + buffer), even if bags
 --- already hold some seeds. Refine-before-buy when plants can cover that line.
 function CSP.ShouldCultBuy()
-    if SkillUpMod().ShouldCultPlant() ~= true then
+    if Gates().ShouldCultPlant() ~= true then
         return false
     end
     local Watch = StockPiler4.Watch
@@ -937,7 +953,7 @@ function CSP.CollectBuyJobs()
             end
         end
     end
-    local containerJobs = SkillUpMod().CollectContainerBuyJobs() or {}
+    local containerJobs = ASP().CollectContainerBuyJobs() or {}
     for i = 1, #containerJobs do
         jobs[#jobs + 1] = containerJobs[i]
     end
@@ -946,7 +962,7 @@ end
 
 --- Notify once per Cult stall reason; clear latch when condition lifts.
 function CSP.MaybeNotifyStall()
-    if SkillUpMod().ShouldCultPlant() ~= true then
+    if Gates().ShouldCultPlant() ~= true then
         CSP._stallLatch = nil
     MirrorStallToSkillUp()
         return
@@ -1016,29 +1032,297 @@ function CSP.MaybeNotifyStall()
     end
 end
 
-local function Reexport()
-    local SU = StockPiler4.SkillUp
-    if type(SU) ~= "table" then
-        SU = {}
-        StockPiler4.SkillUp = SU
-    end
-    local names = {
-        "PickBestBagSeed", "PreferRefineOverPlant", "PickPlantJob", "CountEmptyPlots",
-        "SeedDeficit", "ScanBestRefinePlant", "HasUpgradePlant", "PickRefineTarget",
-        "RefineUsesForTarget", "AppendRefineIntents", "ResolveBuySeedTarget",
-        "HasRefinablePlants", "ShouldCultBuy", "CollectBuyJobs", "MaybeNotifyStall",
-    }
-    for i = 1, #names do
-        local n = names[i]
-        if CSP[n] ~= nil then
-            SU[n] = CSP[n]
+function CSP.DumpSkillPlan(emit)
+    emit = type(emit) == "function" and emit or function(msg)
+        if StockPiler4.Debug and StockPiler4.Debug.Print then
+            StockPiler4.Debug.Print(msg)
         end
     end
-    SU._stallLatch = CSP._stallLatch
+    local function yn(v)
+        return v == true and "yes" or "no"
+    end
+    local function narrow(v)
+        if v == nil then
+            return ""
+        end
+        if type(v) == "wstring" then
+            return tostring(WStringToString and WStringToString(v) or v)
+        end
+        return tostring(v)
+    end
+
+    local function SeedBudget(seedUid)
+        local CE = StockPiler4.ClimbPlan or StockPiler4.UpgradeSeed
+        if CE and CE.GetSeedBudget then
+            return CE.GetSeedBudget(seedUid)
+        end
+        local Refine = StockPiler4.Refine
+        if Refine and Refine.GetSeedBudget then
+            local b = Refine.GetSeedBudget(seedUid)
+            if type(b) == "table" then
+                return b
+            end
+        end
+        return {
+            live = 0, ground = 0, outstanding = 0, credit = 0, headroom = 0, bufferMin = 0,
+        }
+    end
+
+    emit("=== StockPiler4 skillplan ===")
+
+    local Watch = StockPiler4.Watch
+    local Caps = StockPiler4.TradeSkillCaps
+    local Gates = StockPiler4.SkillUpGates
+    local ASP = StockPiler4.ApoSkillPlan
+    local Rates = StockPiler4.SkillRates
+    local SWS = StockPiler4.SkillUpWatchStatus
+    local cult = Gates and Gates.GetCultSkill and Gates.GetCultSkill() or 0
+    local apo = Gates and Gates.GetApoSkill and Gates.GetApoSkill() or 0
+    emit(string.format(
+        "  skills cult=%d (floor=%d targetMax=%d) apo=%d (floor=%d next=%d)",
+        cult,
+        (Gates and Gates.FloorCultTier and Gates.FloorCultTier(cult) or 0),
+        (Gates and Gates.TargetMaxSkill and Gates.TargetMaxSkill() or 0),
+        apo,
+        (Gates and Gates.FloorApoTier and Gates.FloorApoTier(apo) or 0),
+        (ASP and ASP.NextApoTier and ASP.NextApoTier(apo) or 0)
+    ))
+    emit(string.format(
+        "  toggles cultOn=%s apoOn=%s cultVis=%s apoVis=%s watchesDone=%s allowIdle=%s blocked=%s showStatus=%s",
+        yn(Gates and Gates.IsCultEnabled and Gates.IsCultEnabled()),
+        yn(Gates and Gates.IsApoEnabled and Gates.IsApoEnabled()),
+        yn(Gates and Gates.IsCultVisible and Gates.IsCultVisible()),
+        yn(Gates and Gates.IsApoVisible and Gates.IsApoVisible()),
+        yn(Gates and Gates.WatchesDone and Gates.WatchesDone()),
+        yn(Gates and Gates.WatchesAllowIdleSkillUp and Gates.WatchesAllowIdleSkillUp()),
+        yn(Gates and Gates.AllShortWatchesProgressBlocked and Gates.AllShortWatchesProgressBlocked()),
+        yn(SWS and SWS.ShouldShowWatchStatus and SWS.ShouldShowWatchStatus())
+    ))
+    emit(string.format(
+        "  gates shouldCultGrow=%s shouldCultPlant=%s shouldApoBrew=%s canAutoGrow=%s autoGrowMaster=%s autoBuy=%s",
+        yn(Gates and Gates.ShouldCultGrowForSkillUp and Gates.ShouldCultGrowForSkillUp()),
+        yn(Gates and Gates.ShouldCultPlant and Gates.ShouldCultPlant()),
+        yn(ASP and ASP.ShouldApoBrew and ASP.ShouldApoBrew()),
+        yn(Caps and Caps.CanAutoGrow and Caps.CanAutoGrow()),
+        yn(Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled()),
+        yn(Watch and Watch.IsAutoBuyEnabled and Watch.IsAutoBuyEnabled())
+    ))
+    emit(string.format(
+        "  latches cult=%s apo=%s pendingCult=%s pendingApo=%s",
+        tostring(CSP._stallLatch or "-"),
+        tostring(ASP and ASP._apoStallLatch or "-"),
+        Rates and Rates._pendingCult and string.format("lvl=%s until=%.0f",
+            tostring(Rates._pendingCult.level),
+            tonumber(Rates._pendingCult.untilTime) or 0) or "-",
+        Rates and Rates._pendingApo and string.format("lvl=%s until=%.0f",
+            tostring(Rates._pendingApo.level),
+            tonumber(Rates._pendingApo.untilTime) or 0) or "-"
+    ))
+
+    -- Garden plots
+    emit("--- garden ---")
+    local empty = CSP.CountEmptyPlots and CSP.CountEmptyPlots() or 0
+    emit(string.format("  emptyPlots=%d", empty))
+    local Garden = StockPiler4.Garden
+    local plots = Garden and Garden.GetPlots and Garden.GetPlots() or nil
+    if type(plots) == "table" then
+        for plotNum, row in pairs(plots) do
+            if type(row) == "table" then
+                local stage = tonumber(row.stage) or 0
+                local seedUid = tonumber(row.seedUid) or 0
+                local plantUid = tonumber(row.plantUid) or 0
+                emit(string.format(
+                    "  plot[%s] stage=%s seedUid=%d plantUid=%d empty=%s",
+                    tostring(plotNum),
+                    tostring(stage),
+                    seedUid,
+                    plantUid,
+                    tostring(stage == 0 or stage == 255)
+                ))
+            end
+        end
+    else
+        emit("  plots=(unavailable)")
+    end
+    local Grow = StockPiler4.Grow
+    if Grow and type(Grow._pendingPlant) == "table" then
+        for plotNum, flag in pairs(Grow._pendingPlant) do
+            if (tonumber(flag) or 0) > 0 then
+                local su = Grow._pendingSeedUid and Grow._pendingSeedUid[plotNum] or 0
+                emit(string.format("  pendingPlant plot=%s seedUid=%s", tostring(plotNum), tostring(su)))
+            end
+        end
+    end
+
+    -- Cult plant / refine
+    emit("--- cult plant/refine ---")
+    local pick = CSP.PickBestBagSeed and CSP.PickBestBagSeed() or nil
+    if type(pick) == "table" then
+        local seedUid = tonumber(pick.seedUid) or 0
+        local budget = SeedBudget(seedUid)
+        emit(string.format(
+            "  pick seedUid=%d plantUid=%d req=%d bag=%d name=%s",
+            seedUid,
+            tonumber(pick.plantUid) or 0,
+            tonumber(pick.skillReq) or 0,
+            tonumber(pick.count) or 0,
+            narrow(pick.item and pick.item.name)
+        ))
+        emit(string.format(
+            "  budget live=%s ground=%s outstanding=%s credit=%s buffer=%s headroom=%s",
+            tostring(budget.live),
+            tostring(budget.ground),
+            tostring(budget.outstanding),
+            tostring(budget.credit),
+            tostring(budget.bufferMin),
+            tostring(budget.headroom)
+        ))
+        emit(string.format(
+            "  seedDeficit=%d hasUpgrade=%s hasRefinable=%s",
+            tonumber(CSP.SeedDeficit and CSP.SeedDeficit(seedUid)) or 0,
+            yn(CSP.HasUpgradePlant and CSP.HasUpgradePlant()),
+            yn(CSP.HasRefinablePlants and CSP.HasRefinablePlants())
+        ))
+    else
+        emit("  pick=(none)")
+    end
+    local job = CSP.PickPlantJob and CSP.PickPlantJob() or nil
+    if type(job) == "table" then
+        emit(string.format(
+            "  plantJob seedUid=%d plantable=%d reason=%s req=%d",
+            tonumber(job.seedUid) or 0,
+            tonumber(job.plantable) or 0,
+            tostring(job.plantReason or job.pickMode or "?"),
+            tonumber(job.skillReq) or 0
+        ))
+    else
+        emit("  plantJob=(nil) - see hold/no-plant logs; empty=" .. tostring(empty))
+    end
+    local refine = CSP.ScanBestRefinePlant and CSP.ScanBestRefinePlant() or nil
+    if type(refine) == "table" then
+        emit(string.format(
+            "  refineBest plantUid=%d seedUid=%d req=%d count=%s upgrade=%s",
+            tonumber(refine.plantUid) or 0,
+            tonumber(refine.seedUid) or 0,
+            tonumber(refine.skillReq) or 0,
+            tostring(refine.count or refine.uses or "?"),
+            yn(refine.upgrade == true or (CSP.HasUpgradePlant and CSP.HasUpgradePlant()))
+        ))
+    else
+        emit("  refineBest=(none)")
+    end
+    local buySeed = CSP.ShouldCultBuy and CSP.ShouldCultBuy() == true
+    emit(string.format("  shouldCultBuy=%s", yn(buySeed)))
+    if CSP.CollectBuyJobs then
+        local seedJobs = CSP.CollectBuyJobs() or {}
+        emit(string.format("  cultBuyJobs=%d", #seedJobs))
+        for i = 1, #seedJobs do
+            local j = seedJobs[i]
+            emit(string.format(
+                "    buy[%d] uid=%s deficit=%s role=%s skillUp=%s",
+                i,
+                tostring(j.uid or j.uniqueID),
+                tostring(j.deficit),
+                tostring(j.role),
+                yn(j.skillUp == true)
+            ))
+        end
+    end
+
+    -- Apo brew / vials
+    emit("--- apo brew/vials ---")
+    emit(string.format(
+        "  apoTier=%d vials have=%d want=%d shouldBuy=%s",
+        ASP and ASP.ApoTargetTier and ASP.ApoTargetTier() or 0,
+        ASP and ASP.CountApoContainers and ASP.CountApoContainers() or 0,
+        Rates and Rates.ApoContainerBuyTarget and Rates.ApoContainerBuyTarget() or 0,
+        yn(ASP and ASP.ShouldApoBuyContainer and ASP.ShouldApoBuyContainer())
+    ))
+    local vialTarget = ASP and ASP.ResolveBuyContainerTarget and ASP.ResolveBuyContainerTarget() or nil
+    if type(vialTarget) == "table" then
+        emit(string.format(
+            "  vialTarget uid=%d skillReq=%d",
+            tonumber(vialTarget.uid) or 0,
+            tonumber(vialTarget.skillReq) or 0
+        ))
+    end
+    if ASP and ASP.CollectContainerBuyJobs then
+        local cJobs = ASP.CollectContainerBuyJobs() or {}
+        emit(string.format("  containerBuyJobs=%d", #cJobs))
+        for i = 1, #cJobs do
+            local j = cJobs[i]
+            emit(string.format(
+                "    vialBuy[%d] uid=%s deficit=%s skillReq=%s",
+                i,
+                tostring(j.uid or j.uniqueID),
+                tostring(j.deficit),
+                tostring(j.skillReq)
+            ))
+        end
+    end
+    for _, role in ipairs({ "main", "container", "stabilizer" }) do
+        local mats = ASP and ASP.ListApoBagMaterials and ASP.ListApoBagMaterials(role) or {}
+        emit(string.format("  mats[%s] candidates=%d", role, type(mats) == "table" and #mats or 0))
+        if type(mats) == "table" then
+            local lim = math.min(#mats, 5)
+            for i = 1, lim do
+                local m = mats[i]
+                emit(string.format(
+                    "    [%d] uid=%d count=%s stab=%s req=%s surplus=%s name=%s",
+                    i,
+                    tonumber(m.uid) or 0,
+                    tostring(m.count),
+                    tostring(m.stability),
+                    tostring(m.skillReq or m.skillLevel),
+                    tostring(m.surplus),
+                    narrow(m.item and m.item.name)
+                ))
+            end
+        end
+    end
+    local brewRow = ASP and ASP.BuildApoBrewRow and ASP.BuildApoBrewRow({ quiet = true }) or nil
+    if type(brewRow) == "table" then
+        emit(string.format(
+            "  brewRow craftable=%s mainUid=%s status=%s name=%s",
+            tostring(brewRow.craftable),
+            tostring(brewRow.mainUid),
+            tostring(brewRow.statusKey),
+            narrow(brewRow.name)
+        ))
+    else
+        emit(string.format(
+            "  brewRow=(nil) stall=%s",
+            tostring(ASP and ASP._apoStallLatch or "-")
+        ))
+    end
+
+    -- Watch status rows
+    emit("--- watch status rows ---")
+    local rows = SWS and SWS.BuildWatchStatusRows and SWS.BuildWatchStatusRows() or {}
+    emit(string.format("  rows=%d", #rows))
+    for i = 1, #rows do
+        local r = rows[i]
+        emit(string.format(
+            "  row[%d] kind=%s name=%s status=%s stock=%s craftable=%s hideAg=%s hideBrew=%s",
+            i,
+            tostring(r.skillUpKind),
+            narrow(r.name),
+            tostring(r.statusKey),
+            narrow(r.stockText),
+            tostring(r.craftable),
+            yn(r.hideAutoGrow == true),
+            yn(r.hideBrew == true)
+        ))
+        if type(r.statusLines) == "table" then
+            for li = 1, #r.statusLines do
+                emit("    tip: " .. narrow(r.statusLines[li]))
+            end
+        end
+    end
+
+    -- Rates (reuse)
+    if Rates and Rates.DumpRates then Rates.DumpRates(emit) end
+
+    emit("=== end skillplan ===")
 end
 
-function CSP.SyncSkillUpExports()
-    Reexport()
-end
-
-Reexport()

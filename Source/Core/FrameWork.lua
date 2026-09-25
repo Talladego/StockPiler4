@@ -80,9 +80,6 @@ local function ShouldSkipPump()
         if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
             return true
         end
-        if Sch._skipPlanThisFrame == true then
-            return true
-        end
     end
     local Orch = StockPiler4.Orchestrator
     if Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true then
@@ -211,22 +208,85 @@ function FW.StartOnce(id, gen, fn)
     })
 end
 
---- Prewarm enqueue no-ops (Phase 2: bag index + sync plan; not in core loop).
+--- WarmHave / Demand / seed-lines: one phase per Pump frame (budget=1).
+--- WarmHave is two resume steps (collect vs bag) so recipe hydrate never
+--- shares a frame with the bag walk — and never with Watch paint.
+--- Ownership: only Scheduler.RequestCachePrewarm enqueues; Pump owns drain.
+--- Gen token = snapGen:reason — same gen no-ops (no mid-plan mutation).
 function FW.EnqueueWarmHave(gen)
-    return false
+    return FW.Start({
+        id = "prewarm-warm-have",
+        gen = gen,
+        stepsPerFrame = 1,
+        resume = function(state)
+            local P = StockPiler4.Planner
+            if not P then
+                return "done"
+            end
+            if state.phase == nil or state.phase == "restart" then
+                state.phase = "collect"
+                if P.BeginWarmHaveSlice then
+                    local result = P.BeginWarmHaveSlice()
+                    if result == "done" then
+                        return "done"
+                    end
+                    return "continue"
+                end
+                if P.WarmHave then
+                    P.WarmHave()
+                elseif P.WarmSpecHaveCacheForWatches then
+                    P.WarmSpecHaveCacheForWatches()
+                end
+                return "done"
+            end
+            if state.phase == "collect" then
+                if P.FinishWarmHaveSlice then
+                    local result = P.FinishWarmHaveSlice()
+                    -- Snap moved mid-slice: restart collect (do not publish cold).
+                    if result == "restart" then
+                        state.phase = "restart"
+                        return "continue"
+                    end
+                end
+                state.phase = "bag"
+                return "done"
+            end
+            return "done"
+        end,
+    })
 end
 
 function FW.EnqueueDemand(gen)
-    return false
+    return FW.StartOnce("prewarm-demand", gen, function()
+        local P = StockPiler4.Planner
+        if P and P.WarmDemand then
+            P.WarmDemand()
+        elseif P and P.BuildBalancedSpecDemand then
+            P.BuildBalancedSpecDemand({ cacheOnly = true })
+        end
+    end)
 end
 
 function FW.EnqueueSeedLines(gen)
-    return false
+    return FW.StartOnce("prewarm-seed-lines", gen, function()
+        local P = StockPiler4.Planner
+        if P and P.WarmSeedLines then
+            P.WarmSeedLines()
+        elseif P and P.CollectAutoGrowSeedLines then
+            P.CollectAutoGrowSeedLines()
+        end
+        local Grow = StockPiler4.Grow
+        if Grow and Grow.WarmSeedLines then
+            Grow.WarmSeedLines()
+        end
+    end)
 end
 
---- Legacy callers must not block bag→plan pipeline on prewarm jobs.
+--- True while any prewarm job is queued/running (hold PlanRebuild + Watch flush).
 function FW.IsPrewarmBusy()
-    return false
+    return FW.IsActive("prewarm-warm-have")
+        or FW.IsActive("prewarm-demand")
+        or FW.IsActive("prewarm-seed-lines")
 end
 
 --- Drain up to frame budget (default 1). Returns true if any step ran.

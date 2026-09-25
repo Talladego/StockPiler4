@@ -22,6 +22,8 @@ Refine._emptyIntentBustAt = 0
 Refine._bufferFlags = nil
 Refine._bufferFlagsKey = nil
 Refine._bufferFlagsStructKey = nil
+Refine._bufferFlagsSticky = nil
+Refine._bufferFlagsStickyStruct = nil
 Refine._pendingByPlant = Refine._pendingByPlant or {}
 Refine._pendingSeedByPlant = Refine._pendingSeedByPlant or {}
 Refine._issuedSeedThisTick = nil
@@ -509,6 +511,26 @@ local function EnsureBufferFlagsCached()
             return Refine._bufferFlags
         end
     end
+    -- Plant quiet / harvest storm: reuse structural or sticky flags (avoid snapGen
+    -- rebuild every Inv.ApplySlots / orch tick — libperf BufferFlags trails).
+    local Sch = StockPiler4.Scheduler
+    local quiet = Sch and (
+        (Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true)
+        or (Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
+    )
+    if quiet then
+        if type(Refine._bufferFlags) == "table" then
+            local structKey = BufferFlagsStructuralKey()
+            if Refine._bufferFlagsStructKey == structKey
+                or Refine._bufferFlagsStructKey ~= nil
+            then
+                return Refine._bufferFlags
+            end
+        end
+        if type(Refine._bufferFlagsSticky) == "table" then
+            return Refine._bufferFlagsSticky
+        end
+    end
     local key = BufferFlagsCacheKey()
     if Refine._bufferFlagsKey == key and type(Refine._bufferFlags) == "table" then
         return Refine._bufferFlags
@@ -517,8 +539,8 @@ local function EnsureBufferFlagsCached()
     if Perf and Perf.Begin then
         Perf.Begin("Refine.BufferFlags")
     end
-    local RS = StockPiler4.RecipeSpec
-    local lines = (RS and RS.CollectAutoGrowSeedLines and RS.CollectAutoGrowSeedLines()) or {}
+    local Planner = StockPiler4.Planner
+    local lines = (Planner and Planner.CollectAutoGrowSeedLines and Planner.CollectAutoGrowSeedLines()) or {}
     local pending, short = false, false
     for i = 1, #lines do
         if LineConvertiblePending(lines[i]) then
@@ -534,6 +556,8 @@ local function EnsureBufferFlagsCached()
     Refine._bufferFlags = { pending = pending, short = short }
     Refine._bufferFlagsKey = key
     Refine._bufferFlagsStructKey = BufferFlagsStructuralKey()
+    Refine._bufferFlagsSticky = Refine._bufferFlags
+    Refine._bufferFlagsStickyStruct = Refine._bufferFlagsStructKey
     if Perf and Perf.End then
         Perf.End("Refine.BufferFlags")
     end
@@ -610,6 +634,10 @@ function Refine.InvalidateIntentCache()
 end
 
 function Refine.InvalidateBufferFlags()
+    if type(Refine._bufferFlags) == "table" then
+        Refine._bufferFlagsSticky = Refine._bufferFlags
+        Refine._bufferFlagsStickyStruct = Refine._bufferFlagsStructKey
+    end
     Refine._bufferFlagsKey = nil
     Refine._bufferFlags = nil
     Refine._bufferFlagsStructKey = nil
@@ -619,9 +647,18 @@ end
 function Refine.PeekCachedBufferPending()
     local flags = Refine._bufferFlags
     if type(flags) ~= "table" then
+        flags = Refine._bufferFlagsSticky
+    end
+    if type(flags) ~= "table" then
         return false
     end
     return flags.pending == true
+end
+
+--- True when BufferFlags cache is warm (orch can peek without rebuild).
+function Refine.HasBufferFlagsCache()
+    return type(Refine._bufferFlags) == "table"
+        or type(Refine._bufferFlagsSticky) == "table"
 end
 
 --- O(1) urgent snap invalidate - do not rebuild BufferFlags / HasAnyBufferShort here.
@@ -689,8 +726,8 @@ function Refine.HasPendingBufferRefine()
     if not (Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true) then
         return false
     end
-    local RS = StockPiler4.RecipeSpec
-    if not (RS and RS.CollectAutoGrowSeedLines) then
+    local Planner = StockPiler4.Planner
+    if not (Planner and Planner.CollectAutoGrowSeedLines) then
         return false
     end
     return EnsureBufferFlagsCached().pending == true
@@ -701,8 +738,8 @@ function Refine.HasAnyBufferShort()
     if not (Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true) then
         return false
     end
-    local RS = StockPiler4.RecipeSpec
-    if not (RS and RS.CollectAutoGrowSeedLines) then
+    local Planner = StockPiler4.Planner
+    if not (Planner and Planner.CollectAutoGrowSeedLines) then
         return false
     end
     return EnsureBufferFlagsCached().short == true
@@ -794,10 +831,6 @@ local function ResolveDemand(opts)
     local DP = StockPiler4.DemandPlan
     if DP and DP.Build then
         return DP.Build()
-    end
-    local RS = StockPiler4.RecipeSpec
-    if RS and RS.BuildBalancedSpecDemand then
-        return RS.BuildBalancedSpecDemand()
     end
     return nil
 end
@@ -943,16 +976,17 @@ function Refine.ShouldAllowRefineNow()
             end
         end
         if plantable then
-            local SkillUp = StockPiler4.SkillUp
-            -- SkillUp: refine higher plant or buffer-fill plants before replanting.
-            if SkillUp and SkillUp.PreferRefineOverPlant
-                and SkillUp.PreferRefineOverPlant() == true
+            local CSP = StockPiler4.CultSkillPlan
+            -- Cult SkillUp: refine higher plant or buffer-fill plants before replanting.
+            if CSP and CSP.PreferRefineOverPlant
+                and CSP.PreferRefineOverPlant() == true
             then
-                if SkillUp.HasUpgradePlant and SkillUp.HasUpgradePlant() == true then
+                if CSP.HasUpgradePlant and CSP.HasUpgradePlant() == true then
                     return true, "skill-up-upgrade"
                 end
                 return true, "skill-up-refine"
             end
+
             if bufferPending then
                 if plantReason == "potion_stock" or plantReason == "seed_buffer" then
                     return false, "plant-first"
@@ -995,10 +1029,12 @@ function Refine.CollectIntents(opts)
         -- Rate-limit: unbounded rebuilds here caused ~300-450ms spikes every AutoGrow
         -- tick while plots grew with a short seed buffer + leftover refinable plants.
         if #Refine._intentCache == 0 then
-            local SkillUp = StockPiler4.SkillUp
-            local skillUpPending = SkillUp and SkillUp.ShouldCultPlant
-                and SkillUp.ShouldCultPlant() == true
-                and SkillUp.HasRefinablePlants and SkillUp.HasRefinablePlants() == true
+            local Gates = StockPiler4.SkillUpGates
+            local CSP = StockPiler4.CultSkillPlan
+            local skillUpPending = Gates and Gates.ShouldCultPlant
+                and Gates.ShouldCultPlant() == true
+                and CSP and CSP.HasRefinablePlants and CSP.HasRefinablePlants() == true
+
             local wantBust = Refine.HasPendingBufferRefine() == true
                 or skillUpPending == true
                 or Refine._refineDirtyReason == "harvest"
@@ -1032,8 +1068,9 @@ function Refine.CollectIntents(opts)
     local seenBuffer = {}
 
     -- 1) Seed-buffer (bootstrap when brew deficit 0 but buffer short)
-    if bufferOn and RS and RS.CollectAutoGrowSeedLines then
-        local lines = RS.CollectAutoGrowSeedLines() or {}
+    local Planner = StockPiler4.Planner
+    if bufferOn and Planner and Planner.CollectAutoGrowSeedLines then
+        local lines = Planner.CollectAutoGrowSeedLines() or {}
         for i = 1, #lines do
             local line = lines[i]
             local seedUid = tonumber(line.seedUid) or 0
@@ -1074,19 +1111,21 @@ function Refine.CollectIntents(opts)
         end)
     end
 
-    -- 1c) SkillUp Cult: refine plants back to seeds to fill empty plots.
-    local SkillUp = StockPiler4.SkillUp
-    if SkillUp and SkillUp.AppendRefineIntents then
-        SkillUp.AppendRefineIntents(intents, function(line, reason, uses, budget)
+    -- 1c) Cult SkillUp: refine plants back to seeds to fill empty plots.
+    local CSP = StockPiler4.CultSkillPlan
+    if CSP and CSP.AppendRefineIntents then
+        CSP.AppendRefineIntents(intents, function(line, reason, uses, budget)
             AppendIntent(intents, line, reason, uses, budget)
         end)
     end
-    -- 1d) SkillUp Apo: refine brew-main surplus into Arboreal Resin when resin-short.
-    if SkillUp and SkillUp.AppendApoResinRefineIntents then
-        SkillUp.AppendApoResinRefineIntents(intents, function(line, reason, uses, budget)
+    -- 1d) Apo SkillUp: refine brew-main surplus into Arboreal Resin when resin-short.
+    local ASP = StockPiler4.ApoSkillPlan
+    if ASP and ASP.AppendApoResinRefineIntents then
+        ASP.AppendApoResinRefineIntents(intents, function(line, reason, uses, budget)
             AppendIntent(intents, line, reason, uses, budget)
         end)
     end
+
 
     -- 2) Plant-need (prefer PlanSnapshot / opts demand — avoid WarmHave rebuild on orch tick)
     do

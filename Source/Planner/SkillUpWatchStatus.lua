@@ -7,8 +7,16 @@ StockPiler4 = StockPiler4 or {}
 StockPiler4.SkillUpWatchStatus = StockPiler4.SkillUpWatchStatus or {}
 local SWS = StockPiler4.SkillUpWatchStatus
 
-local function SkillUpMod()
-    return StockPiler4.SkillUp
+local function Gates()
+    return StockPiler4.SkillUpGates
+end
+
+local function CSP()
+    return StockPiler4.CultSkillPlan
+end
+
+local function ASP()
+    return StockPiler4.ApoSkillPlan
 end
 
 ----------------------------------------------------------------
@@ -46,16 +54,16 @@ end
 --- When short watches are all progress-blocked, returns fallback_blocked so UI can
 --- show that SkillUp is allowed to act without consuming watch mats.
 local function WaitingWatchesStatus(kind)
-    if SkillUpMod().WatchesDone() == true then
+    if Gates().WatchesDone() == true then
         return nil, nil, nil
     end
     local Watch = StockPiler4.Watch
     local potionShort = Watch and Watch.AllEnabledPotionWatchesStocked
         and Watch.AllEnabledPotionWatchesStocked() ~= true
-    local plantShort = AllEnabledPlantWatchesStocked() ~= true
-    local bufferShort = SeedBufferOk() ~= true
+    local plantShort = Gates().AllEnabledPlantWatchesStocked() ~= true
+    local bufferShort = Gates().SeedBufferOk() ~= true
 
-    if bufferShort ~= true and SkillUpMod().AllShortWatchesProgressBlocked() == true then
+    if bufferShort ~= true and Gates().AllShortWatchesProgressBlocked() == true then
         local lines = {
             TOr(
                 kind == "apo" and "skillup.watch.apo_fallback_tip" or "skillup.watch.cult_fallback_tip",
@@ -106,24 +114,24 @@ local function WaitingWatchesStatus(kind)
 end
 
 local function CultStatusKeyAndText()
-    if SkillUpMod().HasUpgradePlant() == true or SkillUpMod().HasRefinablePlants() == true then
-        local pick = SkillUpMod().PickBestBagSeed()
-        local budget = pick and SeedBudget(tonumber(pick.seedUid) or 0) or nil
+    if CSP().HasUpgradePlant() == true or CSP().HasRefinablePlants() == true then
+        local pick = CSP().PickBestBagSeed()
+        local budget = pick and CSP().SeedBudget(tonumber(pick.seedUid) or 0) or nil
         local headroom = type(budget) == "table" and (tonumber(budget.headroom) or 0) or 0
-        if headroom > 0 or SkillUpMod().HasUpgradePlant() == true then
+        if headroom > 0 or CSP().HasUpgradePlant() == true then
             return "refining", TOr("skillup.watch.cult_refining", L"Refining for seeds")
         end
     end
-    local job = SkillUpMod().PickPlantJob and SkillUpMod().PickPlantJob() or nil
+    local job = CSP().PickPlantJob and CSP().PickPlantJob() or nil
     if type(job) == "table" and (tonumber(job.plantable) or 0) >= 1 then
-        local budget = SeedBudget(tonumber(job.seedUid) or 0)
+        local budget = CSP().SeedBudget(tonumber(job.seedUid) or 0)
         local headroom = tonumber(budget.headroom) or 0
         if headroom > 0 then
             return "buffer_plant", TOr("skillup.watch.cult_buffer", L"Planting for seed buffer")
         end
         return "planting", TOr("skillup.watch.cult_planting", L"Planting Skill up seeds")
     end
-    local latch = tostring(SkillUpMod()._stallLatch or "")
+    local latch = tostring(CSP()._stallLatch or "")
     if latch ~= "" then
         local short = TOr("skillup.watch.cult_" .. latch, nil)
         if short ~= nil then
@@ -131,7 +139,7 @@ local function CultStatusKeyAndText()
         end
         return latch, TOr("skillup.stall." .. latch, L"Skill up Culti stalled")
     end
-    if SkillUpMod().CountEmptyPlots() <= 0 then
+    if CSP().CountEmptyPlots() <= 0 then
         return "growing", TOr("skillup.watch.cult_growing", L"Plots full - waiting harvest")
     end
     return "idle", TOr("skillup.watch.cult_idle", L"Skill up Culti idle")
@@ -148,14 +156,14 @@ local function HighestInGroundSkillUpSeed()
         end
         local req = 0
         if type(item) == "table" then
-            req = SeedSkillReq(item)
+            req = CSP().SeedSkillReq(item)
         end
         if req <= 0 then
             local Inv = StockPiler4.Inventory
             if Inv and Inv.GetSample then
                 local sample = Inv.GetSample(seedUid)
                 if type(sample) == "table" then
-                    req = SeedSkillReq(sample)
+                    req = CSP().SeedSkillReq(sample)
                     if type(item) ~= "table" then
                         item = sample
                     end
@@ -168,7 +176,7 @@ local function HighestInGroundSkillUpSeed()
         if req <= 0 and StockPiler4.Items and StockPiler4.Items.GetByUid then
             local row = StockPiler4.Items.GetByUid(seedUid)
             if type(row) == "table" then
-                req = SeedSkillReq(row)
+                req = CSP().SeedSkillReq(row)
                 if type(item) ~= "table" then
                     item = row
                 end
@@ -232,7 +240,7 @@ local function TradeSkillIcon(kind)
 end
 
 local function BuildCultWatchStatusRow()
-    local cult = SkillUpMod().GetCultSkill()
+    local cult = Gates().GetCultSkill()
     if cult <= 0 then
         return nil
     end
@@ -241,7 +249,7 @@ local function BuildCultWatchStatusRow()
         return nil
     end
     -- Show while Cult SkillUp is on, or while Apo SkillUp needs Cult assist.
-    if SkillUpMod().IsCultEnabled() ~= true and SkillUpMod().IsApoEnabled() ~= true then
+    if Gates().IsCultEnabled() ~= true and Gates().IsApoEnabled() ~= true then
         return nil
     end
 
@@ -250,7 +258,7 @@ local function BuildCultWatchStatusRow()
 
     -- Internals still track the active seed line (highest in plots, else bag pick).
     local growing = HighestInGroundSkillUpSeed()
-    local pick = SkillUpMod().PickBestBagSeed()
+    local pick = CSP().PickBestBagSeed()
     local seedUid = 0
     local plantUid = 0
     if type(growing) == "table" and (tonumber(growing.seedUid) or 0) > 0 then
@@ -267,7 +275,7 @@ local function BuildCultWatchStatusRow()
             plantUid = tonumber(SM.PrimaryPlantForSeed(seedUid)) or 0
         end
     end
-    local budget = SeedBudget(seedUid)
+    local budget = CSP().SeedBudget(seedUid)
     local live = tonumber(budget.live) or 0
     local buffer = tonumber(budget.bufferMin) or 0
     local statusKey, statusText, waitingLines
@@ -295,7 +303,7 @@ local function BuildCultWatchStatusRow()
     if displayReq < 1 and type(pick) == "table" then
         displayReq = tonumber(pick.skillReq) or 0
     end
-    local tier = SkillUpMod().TargetMaxSkill()
+    local tier = Gates().TargetMaxSkill()
     if displayReq > 0 then
         tier = displayReq
     end
@@ -330,7 +338,7 @@ local function BuildCultWatchStatusRow()
         uniqueID = 0,
         seedUid = seedUid,
         plantUid = plantUid,
-        -- Stock/Craftable/Target are potion-watch columns; blank on SkillUpMod().
+        -- Stock/Craftable/Target are potion-watch columns; blank on SkillUp rows.
         potionHave = live,
         stockText = dash,
         target = buffer,
@@ -370,16 +378,16 @@ local function ApoStatusFromWhy(why)
 end
 
 local function BuildApoWatchStatusRow()
-    if SkillUpMod().IsApoEnabled() ~= true then
+    if Gates().IsApoEnabled() ~= true then
         return nil
     end
-    local tier = SkillUpMod().ApoTargetTier()
+    local tier = ASP().ApoTargetTier()
     local waitingKey, waitingText, waitingLines = WaitingWatchesStatus("apo")
     local brewRow = nil
     local statusKey, statusText, craftable, target, recipe
     if waitingKey == "fallback_blocked" then
-        if SkillUpMod().ShouldApoBrew() == true and SkillUpMod().BuildApoBrewRow then
-            brewRow = SkillUpMod().BuildApoBrewRow({ quiet = true })
+        if ASP().ShouldApoBrew() == true and ASP().BuildApoBrewRow then
+            brewRow = ASP().BuildApoBrewRow({ quiet = true })
         end
         if type(brewRow) == "table" then
             statusKey = "ready_to_craft"
@@ -401,8 +409,8 @@ local function BuildApoWatchStatusRow()
         target = 0
         recipe = nil
     else
-        if SkillUpMod().ShouldApoBrew() == true and SkillUpMod().BuildApoBrewRow then
-            brewRow = SkillUpMod().BuildApoBrewRow({ quiet = true })
+        if ASP().ShouldApoBrew() == true and ASP().BuildApoBrewRow then
+            brewRow = ASP().BuildApoBrewRow({ quiet = true })
         end
         if type(brewRow) == "table" then
             statusKey = "ready_to_craft"
@@ -411,7 +419,7 @@ local function BuildApoWatchStatusRow()
             target = tonumber(brewRow.target) or (craftable * 5)
             recipe = brewRow.recipe
         else
-            local latch = tostring(SkillUpMod()._apoStallLatch or "need_mats")
+            local latch = tostring(ASP()._apoStallLatch or "need_mats")
             statusKey, statusText = ApoStatusFromWhy(latch)
             craftable = 0
             target = 0
@@ -447,7 +455,7 @@ local function BuildApoWatchStatusRow()
         itemData = nil,
         uniqueID = 0,
         mainUid = type(brewRow) == "table" and (tonumber(brewRow.mainUid) or 0) or 0,
-        -- Stock/Craftable/Target are potion-watch columns; blank on SkillUpMod().
+        -- Stock/Craftable/Target are potion-watch columns; blank on SkillUp rows.
         potionHave = 0,
         stockText = dash,
         target = target or 0,
@@ -479,19 +487,19 @@ end
 --- Visibility follows Cult/Apo toggles; action uses WatchesAllowIdleSkillUp().
 function SWS.ShouldShowWatchStatus()
     local Caps = StockPiler4.TradeSkillCaps
-    if SkillUpMod().IsCultEnabled() == true
+    if Gates().IsCultEnabled() == true
         and Caps and Caps.CanAutoGrow and Caps.CanAutoGrow() == true
     then
         return true
     end
     -- Apo-only: Cult assist row still useful when Apo is on and Cult can grow.
-    if SkillUpMod().IsApoEnabled() == true
+    if Gates().IsApoEnabled() == true
         and Caps and Caps.CanAutoGrow and Caps.CanAutoGrow() == true
-        and SkillUpMod().GetCultSkill() > 0
+        and Gates().GetCultSkill() > 0
     then
         return true
     end
-    if SkillUpMod().IsApoEnabled() == true then
+    if Gates().IsApoEnabled() == true then
         return true
     end
     return false
@@ -512,18 +520,3 @@ function SWS.BuildWatchStatusRows()
     return rows
 end
 
-local function Reexport()
-    local SU = StockPiler4.SkillUp
-    if type(SU) ~= "table" then
-        SU = {}
-        StockPiler4.SkillUp = SU
-    end
-    SU.ShouldShowWatchStatus = SWS.ShouldShowWatchStatus
-    SU.BuildWatchStatusRows = SWS.BuildWatchStatusRows
-end
-
-function SWS.SyncSkillUpExports()
-    Reexport()
-end
-
-Reexport()

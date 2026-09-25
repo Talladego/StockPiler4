@@ -226,15 +226,15 @@ function BrewPlan.BuildIntent(opts)
 
 
 
-    local SkillUp = StockPiler4.SkillUp
+    local ASP = StockPiler4.ApoSkillPlan
 
-    if SkillUp and SkillUp.ShouldApoBrew and SkillUp.ShouldApoBrew() == true then
+    if ASP and ASP.ShouldApoBrew and ASP.ShouldApoBrew() == true then
 
-        row = SkillUp.GetApoBrewRow and SkillUp.GetApoBrewRow()
+        row = ASP.GetApoBrewRow and ASP.GetApoBrewRow()
 
-        if type(row) ~= "table" and SkillUp.BuildApoBrewRow then
+        if type(row) ~= "table" and ASP.BuildApoBrewRow then
 
-            row = SkillUp.BuildApoBrewRow({ quiet = true })
+            row = ASP.BuildApoBrewRow({ quiet = true })
 
         end
 
@@ -245,6 +245,7 @@ function BrewPlan.BuildIntent(opts)
         end
 
     end
+
 
 
 

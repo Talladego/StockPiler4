@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler4 = StockPiler4 or {}
-StockPiler4.Version = L"0.4.21"
+StockPiler4.Version = L"0.4.35"
 
 local function T(key, tokens)
     return StockPiler4.Util.T(key, tokens)
@@ -151,24 +151,36 @@ local function DumpAll()
     end
 
     section("skillplan")
-    if StockPiler4.SkillUp and StockPiler4.SkillUp.DumpSkillPlan then
-        StockPiler4.SkillUp.DumpSkillPlan(emit)
+    if StockPiler4.CultSkillPlan and StockPiler4.CultSkillPlan.DumpSkillPlan then
+        local ok, err = pcall(StockPiler4.CultSkillPlan.DumpSkillPlan, emit)
+        if not ok then
+            emit("skillplan| ERROR: " .. tostring(err))
+        end
     else
         emit("skillplan| dump unavailable")
     end
 
     section("families")
     if StockPiler4.SeedMap and StockPiler4.SeedMap.DumpFamilies then
-        StockPiler4.SeedMap.DumpFamilies(emit)
+        local ok, err = pcall(StockPiler4.SeedMap.DumpFamilies, emit)
+        if not ok then
+            emit("families| ERROR: " .. tostring(err))
+        end
     else
         emit("families| dump unavailable")
     end
 
     section("upgradeplan")
     if StockPiler4.ClimbPlan and StockPiler4.ClimbPlan.Dump then
-        StockPiler4.ClimbPlan.Dump(emit)
+        local ok, err = pcall(StockPiler4.ClimbPlan.Dump, emit)
+        if not ok then
+            emit("upgradeplan| ERROR: " .. tostring(err))
+        end
     elseif StockPiler4.UpgradeSeed and StockPiler4.UpgradeSeed.Dump then
-        StockPiler4.UpgradeSeed.Dump(emit)
+        local ok, err = pcall(StockPiler4.UpgradeSeed.Dump, emit)
+        if not ok then
+            emit("upgradeplan| ERROR: " .. tostring(err))
+        end
     else
         emit("upgradeplan| dump unavailable")
     end
@@ -299,9 +311,9 @@ function StockPiler4.OnSlash(input)
         return
     end
     if lower == "skillplan" then
-        local SkillUp = StockPiler4.SkillUp
-        if SkillUp and SkillUp.DumpSkillPlan then
-            SkillUp.DumpSkillPlan(function(msg) EmitLog(msg) end)
+        local CSP = StockPiler4.CultSkillPlan
+        if CSP and CSP.DumpSkillPlan then
+            CSP.DumpSkillPlan(function(msg) EmitLog(msg) end)
             Print(T("boot.skillplan_dumped"))
         else
             EmitLog("skillplan| dump unavailable")
@@ -342,8 +354,8 @@ function StockPiler4.OnSlash(input)
         return
     end
     if lower == "stats clear" or lower == "clearstats" then
-        local SkillUp = StockPiler4.SkillUp
-        if SkillUp and SkillUp.ClearRates and SkillUp.ClearRates() then
+        local Rates = StockPiler4.SkillRates
+        if Rates and Rates.ClearRates and Rates.ClearRates() then
             EmitLog("stats| skill-up rates cleared")
             Print(T("boot.stats_cleared"))
         else

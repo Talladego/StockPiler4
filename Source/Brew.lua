@@ -163,9 +163,9 @@ local function RowIsReadyToCraft(row)
     end
     -- SkillUp Apo synthetic row: bags can craft; no watch / AutoGrow arm required.
     if row.skillUp == true then
-        local SkillUp = StockPiler4.SkillUp
+        local ASP = StockPiler4.ApoSkillPlan
         -- Apo at max (or toggle off) must not stay Ready from a stale plan row.
-        if not SkillUp or SkillUp.ShouldApoBrew == nil or SkillUp.ShouldApoBrew() ~= true then
+        if not ASP or ASP.ShouldApoBrew == nil or ASP.ShouldApoBrew() ~= true then
             return false
         end
         if (tonumber(row.craftable) or 0) <= 0 then
@@ -191,8 +191,9 @@ local function RowIsReadyToCraft(row)
         local pk = row.potionKey or row.potionRecipeKey or row.id
         local Watch = StockPiler4.Watch
         local RS = StockPiler4.RecipeSpec
-        if RS and RS.ShouldAutoGrowPotion then
-            if RS.ShouldAutoGrowPotion(pk, nil) ~= true then
+        local WatchAG = StockPiler4.Watch
+        if WatchAG and WatchAG.ShouldAutoGrowPotion then
+            if WatchAG.ShouldAutoGrowPotion(pk, nil) ~= true then
                 return false
             end
         elseif Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() ~= true then
@@ -249,8 +250,8 @@ local function FindSessionRow()
         return nil
     end
     if session.skillUp == true then
-        local SkillUp = StockPiler4.SkillUp
-        local row = SkillUp and SkillUp.GetApoBrewRow and SkillUp.GetApoBrewRow()
+        local ASP = StockPiler4.ApoSkillPlan
+        local row = ASP and ASP.GetApoBrewRow and ASP.GetApoBrewRow()
         if type(row) == "table" then
             return row
         end
@@ -333,8 +334,8 @@ local function PatchPlanRowTargetMet(session, liveHave)
                     local DP = StockPiler4.DemandPlan
                     if Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true
                         and type(recipe) == "table"
-                        and RS and RS.ShouldAutoGrowPotion
-                        and RS.ShouldAutoGrowPotion(row.potionKey or row.potionRecipeKey or row.id, nil) == true
+                        and StockPiler4.Watch and StockPiler4.Watch.ShouldAutoGrowPotion
+                        and StockPiler4.Watch.ShouldAutoGrowPotion(row.potionKey or row.potionRecipeKey or row.id, nil) == true
                         and DP and DP.WatchHasSeedBufferShort
                     then
                         local seedUids = row.seedBufferSeedUids
@@ -993,11 +994,11 @@ function Brew.PickReadyWatch()
         end
     end
     -- Idle SkillUp Apo: invent a stable board from surplus mats.
-    local SkillUp = StockPiler4.SkillUp
-    if SkillUp and SkillUp.ShouldApoBrew and SkillUp.ShouldApoBrew() == true
-        and SkillUp.BuildApoBrewRow
+    local ASP = StockPiler4.ApoSkillPlan
+    if ASP and ASP.ShouldApoBrew and ASP.ShouldApoBrew() == true
+        and ASP.BuildApoBrewRow
     then
-        local skillRow = SkillUp.BuildApoBrewRow()
+        local skillRow = ASP.BuildApoBrewRow()
         if RowIsReadyToCraft(skillRow) then
             return skillRow
         end
@@ -1164,13 +1165,13 @@ local function BeginLoadJob(row, source)
     -- SkillUp: never trust a stale plan recipe after Apo max / toggle off.
     -- Always rebuild (or abort) so post-200 bag flush cannot re-load the board.
     if row.skillUp == true then
-        local SkillUp = StockPiler4.SkillUp
-        if not SkillUp or SkillUp.ShouldApoBrew == nil or SkillUp.ShouldApoBrew() ~= true then
+        local ASP = StockPiler4.ApoSkillPlan
+        if not ASP or ASP.ShouldApoBrew == nil or ASP.ShouldApoBrew() ~= true then
             LogBrew("load skip skillup-disabled")
             return false
         end
-        if SkillUp.BuildApoBrewRow then
-            local skillRow = SkillUp.BuildApoBrewRow({ quiet = true })
+        if ASP.BuildApoBrewRow then
+            local skillRow = ASP.BuildApoBrewRow({ quiet = true })
             if type(skillRow) == "table" and type(skillRow.recipe) == "table" then
                 recipe = skillRow.recipe
                 row.recipe = recipe
@@ -1615,10 +1616,10 @@ function Brew.TryPerform(opId)
         Brew._brewHaveBefore = LivePotionHave(GetSession())
         LogBrew("perform opId=" .. tostring(opId or "?")
             .. " haveBefore=" .. tostring(Brew._brewHaveBefore))
-        local SkillUp = StockPiler4.SkillUp
-        if SkillUp and SkillUp.NoteApoAttempt then
+        local Rates = StockPiler4.SkillRates
+        if Rates and Rates.NoteApoAttempt then
             local session = GetSession()
-            SkillUp.NoteApoAttempt({ skillUp = session and session.skillUp == true })
+            Rates.NoteApoAttempt({ skillUp = session and session.skillUp == true })
         end
         if StockPiler4.Scheduler and StockPiler4.Scheduler.EnqueueBagFlush then
             StockPiler4.Scheduler.EnqueueBagFlush(true)
@@ -1758,8 +1759,8 @@ function Brew.MaybeAutoLoadSkillUp()
     if blocked then
         return false
     end
-    local SkillUp = StockPiler4.SkillUp
-    if not (SkillUp and SkillUp.ShouldApoBrew and SkillUp.ShouldApoBrew() == true) then
+    local ASP = StockPiler4.ApoSkillPlan
+    if not (ASP and ASP.ShouldApoBrew and ASP.ShouldApoBrew() == true) then
         return false
     end
     -- Prefer real watch Ready rows; only auto-load SkillUp when none.
@@ -1772,7 +1773,7 @@ function Brew.MaybeAutoLoadSkillUp()
             end
         end
     end
-    local row = SkillUp.BuildApoBrewRow and SkillUp.BuildApoBrewRow()
+    local row = ASP.BuildApoBrewRow and ASP.BuildApoBrewRow()
     if type(row) ~= "table" then
         return false
     end
@@ -1926,8 +1927,8 @@ function Brew.RefreshSessionAfterBrew()
             tostring(craftLeft), tostring(stillValid)
         ))
         Brew.ClearLoadedSession({ reason = "after-brew-skillup-done" })
-        local SkillUp = StockPiler4.SkillUp
-        if SkillUp and SkillUp.ShouldApoBrew and SkillUp.ShouldApoBrew() == true
+        local ASP = StockPiler4.ApoSkillPlan
+        if ASP and ASP.ShouldApoBrew and ASP.ShouldApoBrew() == true
             and StockPiler4.Scheduler and StockPiler4.Scheduler.EnqueueBagFlush
         then
             StockPiler4.Scheduler.EnqueueBagFlush(true)

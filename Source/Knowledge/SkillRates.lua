@@ -52,11 +52,6 @@ local CULT_MAX = 200
 local APO_MAX = 200
 
 local function MirrorPendingToSkillUp()
-    local SkillUp = StockPiler4.SkillUp
-    if type(SkillUp) == "table" then
-        SkillUp._pendingCult = Rates._pendingCult
-        SkillUp._pendingApo = Rates._pendingApo
-    end
 end
 
 
@@ -506,34 +501,3 @@ function Rates.ClearRates()
     return true
 end
 
---- Re-export onto SkillUp so Grow/Brew/Bridge/Buy/Bootstrap keep SkillUp.* names.
-local function ReexportToSkillUp()
-    local SkillUp = StockPiler4.SkillUp
-    if type(SkillUp) ~= "table" then
-        SkillUp = {}
-        StockPiler4.SkillUp = SkillUp
-    end
-    local names = {
-        "SKILL_RATE_MIN_ATTEMPTS", "SKILL_PENDING_TTL_SEC", "SKILL_RATE_NEARBY_SPAN",
-        "SKILL_RATES_SCHEMA", "APO_VIAL_BUY_CAP",
-        "NoteCultAttempt", "NoteApoAttempt", "OnCultSkillDelta", "OnApoSkillDelta",
-        "LevelRate", "DefaultCraftsPerLevel", "ResolveLevelRate",
-        "BandRate", "CultSkillUpRate", "ApoSkillUpRate",
-        "ApoContainerBuyTarget", "DumpRates", "ClearRates",
-    }
-    for i = 1, #names do
-        local n = names[i]
-        SkillUp[n] = Rates[n]
-    end
-    -- Pending attribution readable from SkillUp dumps.
-    SkillUp._pendingCult = Rates._pendingCult
-    SkillUp._pendingApo = Rates._pendingApo
-end
-
--- Late bind: SkillUp.lua may load after this file; Bootstrap also calls Sync.
-function Rates.SyncSkillUpExports()
-    ReexportToSkillUp()
-    -- Keep pending mirrors live after Note* calls by wrapping...
-end
-
-ReexportToSkillUp()

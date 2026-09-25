@@ -340,6 +340,83 @@ function SM.ResolveSeedEffectId(seedUid)
     return 0
 end
 
+local function RoleAsPlantEffectKey(role)
+    role = tostring(role or "")
+    if role == "goldweed" then
+        return "stabilizer"
+    end
+    if role == "stabilizer" or role == "extender"
+        or role == "multiplier" or role == "stimulant"
+    then
+        return role
+    end
+    return nil
+end
+
+--- Plants-tab Effect key from the seed that grows the plant.
+--- Mains: seed EFFECT id. Non-mains: seed role / "Grows Stimulant" (not plant family→Mult).
+function SM.ResolveSeedGrowEffectKey(seedUid)
+    seedUid = tonumber(seedUid) or 0
+    if seedUid <= 0 or SM.IsSeedPacketUid(seedUid) then
+        return nil
+    end
+    local MS = StockPiler4.MaterialSpec
+    local RS = StockPiler4.RecipeSpec
+    local effectId = SM.ResolveSeedEffectId(seedUid)
+    if effectId > 0 and MS and MS.EffectKeyFromEffectId then
+        local key = MS.EffectKeyFromEffectId(effectId)
+        if type(key) == "string" and key ~= "" then
+            if RS and RS.NormalizeEffectKeyForUi then
+                key = RS.NormalizeEffectKeyForUi(key) or key
+            end
+            return key
+        end
+    end
+    local function FromItem(itemData)
+        if type(itemData) ~= "table" then
+            return nil
+        end
+        local key = RoleAsPlantEffectKey(itemData.role or itemData.craftingRole)
+        if key then
+            return key
+        end
+        if MS and MS.FromItemData then
+            local spec = MS.FromItemData(itemData)
+            key = RoleAsPlantEffectKey(spec and spec.role)
+            if key then
+                return key
+            end
+        end
+        if StockPiler4.Classify and StockPiler4.Classify.GetEffectKey then
+            local ck = StockPiler4.Classify.GetEffectKey(itemData)
+            return RoleAsPlantEffectKey(ck)
+        end
+        return nil
+    end
+    local sample = BagSample(seedUid)
+    local key = FromItem(sample)
+    if key then
+        return key
+    end
+    local Items = StockPiler4.Items
+    if Items and Items.GetByUid then
+        key = FromItem(Items.GetByUid(seedUid))
+        if key then
+            return key
+        end
+    end
+    if type(GetDatabaseItemData) == "function" then
+        local ok, data = pcall(GetDatabaseItemData, seedUid)
+        if ok then
+            key = FromItem(data)
+            if key then
+                return key
+            end
+        end
+    end
+    return nil
+end
+
 --- Craft bonus value from a seed (bag / learned / DB), after CraftItemInfo fill-gap.
 --- Cultivation seed bonus lookup (SPECIAL_CHANCE / FAIL_CHANCE on seeds).
 --- Not for plant apo Super-Crit — those meanings differ and must not mix.
@@ -2255,10 +2332,11 @@ function SM.DumpCraftCycleStats(emit)
         emit("  (none)")
     end
 
-    local SkillUp = StockPiler4.SkillUp
-    if SkillUp and SkillUp.DumpRates then
-        SkillUp.DumpRates(emit)
+    local Rates = StockPiler4.SkillRates
+    if Rates and Rates.DumpRates then
+        Rates.DumpRates(emit)
     end
+
 
     local refines = RefinesTable() or {}
     emit("--- refines (plant) ---")

@@ -158,6 +158,7 @@ StockPiler4.Locale.Packs[LANG] = {
     ["effect.short.stabilizer"] = L"Stab",
     ["effect.short.extender"] = L"Ext",
     ["effect.short.multiplier"] = L"Mult",
+    ["effect.short.stimulant"] = L"Stim",
 
     -- Effect full names (tooltips / material tips)
     ["effect.full.str"] = L"Strength",
@@ -195,6 +196,7 @@ StockPiler4.Locale.Packs[LANG] = {
     ["effect.full.stabilizer"] = L"Stabilizer",
     ["effect.full.extender"] = L"Extender",
     ["effect.full.multiplier"] = L"Multiplier",
+    ["effect.full.stimulant"] = L"Stimulant",
 
     -- Watch tab
     ["watch.banner_title"] = L"Watch",

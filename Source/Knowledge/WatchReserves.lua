@@ -25,9 +25,9 @@ local function SeedBudget(seedUid)
 end
 
 local function SeedDeficit(seedUid)
-    local SU = StockPiler4.SkillUp
-    if SU and SU.SeedDeficit then
-        return tonumber(SU.SeedDeficit(seedUid)) or 0
+    local CSP = StockPiler4.CultSkillPlan
+    if CSP and CSP.SeedDeficit then
+        return tonumber(CSP.SeedDeficit(seedUid)) or 0
     end
     local CE = StockPiler4.ClimbPlan or StockPiler4.UpgradeSeed
     if CE and CE.SeedDeficit then
@@ -266,21 +266,3 @@ function WR.PlantRefineSurplus(plantUid, seedUid, plantCount)
     return surplus
 end
 
-local function Reexport()
-    local SU = StockPiler4.SkillUp
-    if type(SU) ~= "table" then
-        SU = {}
-        StockPiler4.SkillUp = SU
-    end
-    for _, n in ipairs({
-        "WatchDemandReserve", "PlantFeedstockReserve", "PlantBrewSurplus", "PlantRefineSurplus",
-    }) do
-        SU[n] = WR[n]
-    end
-end
-
-function WR.SyncSkillUpExports()
-    Reexport()
-end
-
-Reexport()

@@ -446,32 +446,22 @@ end
 
 local function WatchWantsAutoGrow(watchKey, watch)
 
-    local RS = RecipeSpec()
-
     watch = ResolveWatchRow(watchKey, watch)
 
-    if RS and RS.ShouldAutoGrowPotion then
-
-        return RS.ShouldAutoGrowPotion(watchKey, watch) == true
-
+    local Watch = StockPiler4.Watch
+    if Watch and Watch.ShouldAutoGrowPotion then
+        return Watch.ShouldAutoGrowPotion(watchKey, watch) == true
     end
 
     if type(watch) ~= "table" or watch.enabled ~= true then
-
         return false
-
     end
 
-    local Watch = StockPiler4.Watch
-
     if Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() ~= true then
-
         return false
-
     end
 
     return watch.autoGrow == true
-
 end
 
 
@@ -530,8 +520,8 @@ local function BuildBalancedSpecDemand(opts)
 
     local Planner = PlannerRef()
 
-    local snapGen = CurrentSnapGen()
-
+    -- Demand is watch-structural only. CheapRebuild/GardenPatch bump planGen
+    -- every orch tick — keying on planGen re-forced ~270ms rebuilds (libperf).
     local Watch = StockPiler4.Watch
 
     local watchGen = Watch and Watch.GetGen and Watch.GetGen() or 0
@@ -540,9 +530,28 @@ local function BuildBalancedSpecDemand(opts)
 
     local plan = PS and PS.Get and PS.Get() or nil
 
-    local planGen = type(plan) == "table" and tonumber(plan.planGen) or 0
+    local cacheKey = tostring(watchGen)
 
-    local cacheKey = tostring(snapGen) .. ":" .. tostring(watchGen) .. ":" .. tostring(planGen)
+    -- Prefer immutable snapshot demand when watch set matches.
+    if type(plan) == "table" and type(plan.demand) == "table" then
+
+        local planWatch = type(plan.ctx) == "table" and (tonumber(plan.ctx.watchGen) or 0) or 0
+
+        if planWatch == 0 or planWatch == watchGen then
+
+            if Planner then
+
+                Planner._demandCache = plan.demand
+
+                Planner._demandCacheKey = cacheKey
+
+            end
+
+            return plan.demand
+
+        end
+
+    end
 
     if Planner and type(Planner._demandCache) == "table" and Planner._demandCacheKey == cacheKey then
 
@@ -552,19 +561,7 @@ local function BuildBalancedSpecDemand(opts)
 
     if Planner and HoldHaveCacheQuiet() and type(Planner._demandCache) == "table" then
 
-        local prev = tostring(Planner._demandCacheKey or "")
-
-        local suffix = ":" .. tostring(watchGen) .. ":" .. tostring(planGen)
-
-        if string.len(prev) >= string.len(suffix)
-
-            and string.sub(prev, -string.len(suffix)) == suffix
-
-        then
-
-            return Planner._demandCache
-
-        end
+        return Planner._demandCache
 
     end
 
@@ -620,8 +617,6 @@ local function BuildBalancedSpecDemand(opts)
                 local Planner = StockPiler4.Planner
                 if Planner and Planner.WatchStillNeedsGrow then
                     stillNeeds = Planner.WatchStillNeedsGrow(potion, recipe, target, watchKey) == true
-                elseif RS.WatchStillNeedsGrow then
-                    stillNeeds = RS.WatchStillNeedsGrow(potion, recipe, target, watchKey) == true
                 end
 
                 if uid > 0 and deficit > 0 and target > 0 and stillNeeds then
@@ -1169,8 +1164,6 @@ function DemandPlan.WatchHasSeedBufferShort(recipe, opts)
     local lines = nil
     if P and P.CollectAutoGrowSeedLines then
         lines = P.CollectAutoGrowSeedLines()
-    elseif RS and RS.CollectAutoGrowSeedLines then
-        lines = RS.CollectAutoGrowSeedLines()
     end
     if type(lines) == "table" and #lines > 0 then
         lineByKey = {}

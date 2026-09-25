@@ -1,7 +1,7 @@
 ----------------------------------------------------------------
 -- StockPiler4 Planner/ApoSkillPlan - idle Apo brew / resin / vial buy
 -- Extracted from SkillUp; SkillUp re-exports for call-site compatibility.
--- Shared watch reserves (WatchDemandReserve / Plant*Surplus) stay on SkillUp.
+-- Shared watch reserves (WatchDemandReserve / Plant*Surplus) live in WatchReserves.
 ----------------------------------------------------------------
 
 StockPiler4 = StockPiler4 or {}
@@ -9,18 +9,22 @@ StockPiler4.ApoSkillPlan = StockPiler4.ApoSkillPlan or {}
 local ASP = StockPiler4.ApoSkillPlan
 
 local function MirrorApoStateToSkillUp()
-    local SU = StockPiler4.SkillUp
-    if type(SU) == "table" then
-        SU._apoStallLatch = ASP._apoStallLatch
-        SU._apoBrewRow = ASP._apoBrewRow
-    end
+    -- Latch/row live on ASP; callers read ApoSkillPlan directly.
 end
 
 ASP._apoStallLatch = nil
 ASP._apoBrewRow = nil
 
-local function SkillUpMod()
-    return StockPiler4.SkillUp
+local function Gates()
+    return StockPiler4.SkillUpGates
+end
+
+local function WR()
+    return StockPiler4.WatchReserves
+end
+
+local function Rates()
+    return StockPiler4.SkillRates
 end
 
 local function SeedSkillReq(item)
@@ -34,19 +38,64 @@ local function SeedSkillReq(item)
     return req
 end
 
+local function CanUseCraftingSample(sample)
+    local Inv = StockPiler4.Inventory
+    if type(sample) ~= "table" then
+        return false
+    end
+    if Inv and Inv.CanUseCraftingItem then
+        return Inv.CanUseCraftingItem(sample) == true
+    end
+    return true
+end
+
+local function LooksNonMainSeed(item, plantSpec)
+    local role = tostring(plantSpec and plantSpec.role or "")
+    if role == "stabilizer" or role == "extender" or role == "multiplier"
+        or role == "stimulant" or role == "goldweed" or role == "container"
+    then
+        return true
+    end
+    local SM = StockPiler4.SeedMap
+    if SM and SM.SpecHasGoldweedMultiplier and type(plantSpec) == "table"
+        and SM.SpecHasGoldweedMultiplier(plantSpec) == true
+    then
+        return true
+    end
+    if SM and SM.IsHarvestByproduct and type(plantSpec) == "table"
+        and SM.IsHarvestByproduct(plantSpec) == true
+    then
+        return true
+    end
+    local n = ""
+    if type(item) == "table" and item.name ~= nil then
+        if type(item.name) == "wstring" and type(WStringToString) == "function" then
+            n = string.lower(WStringToString(item.name) or "")
+        else
+            n = string.lower(tostring(item.name or ""))
+        end
+    end
+    if string.find(n, "goldweed", 1, true) or string.find(n, "gobswort", 1, true)
+        or string.find(n, "resin", 1, true)
+    then
+        return true
+    end
+    return false
+end
+
 function ASP.ApoTargetTier()
-    return SkillUpMod().FloorApoTier(SkillUpMod().GetApoSkill())
+    return Gates().FloorApoTier(Gates().GetApoSkill())
 end
 
 function ASP.ShouldApoBrew()
-    if SkillUpMod().IsApoEnabled() ~= true then
+    if Gates().IsApoEnabled() ~= true then
         return false
     end
     local Caps = StockPiler4.TradeSkillCaps
     if Caps and Caps.CanBrewPotions and Caps.CanBrewPotions() ~= true then
         return false
     end
-    if SkillUpMod().WatchesAllowIdleSkillUp() ~= true then
+    if Gates().WatchesAllowIdleSkillUp() ~= true then
         return false
     end
     return true
@@ -54,15 +103,15 @@ end
 
 --- Next Apo ladder step above current skill (25, 50, ..., 200).
 function ASP.NextApoTier(apoSkill)
-    apoSkill = tonumber(apoSkill) or SkillUpMod().GetApoSkill()
-    local tiers = SkillUpMod().APO_TIERS or { 1, 25, 50, 75, 100, 125, 150, 175, 200 }
+    apoSkill = tonumber(apoSkill) or Gates().GetApoSkill()
+    local tiers = Gates().APO_TIERS or { 1, 25, 50, 75, 100, 125, 150, 175, 200 }
     for i = 1, #tiers do
         local t = tiers[i]
         if apoSkill < t then
             return t
         end
     end
-    return SkillUpMod().APO_MAX or 200
+    return Gates().APO_MAX or 200
 end
 
 function ASP.CountApoContainers()
@@ -119,7 +168,7 @@ function ASP.ShouldApoBuyContainer()
     if ASP.PickApoBagMaterial("main", { ignoreReserve = true }) == nil then
         return false
     end
-    local want = SkillUpMod().ApoContainerBuyTarget()
+    local want = Rates().ApoContainerBuyTarget()
     if want < 1 then
         return false
     end
@@ -295,7 +344,7 @@ function ASP.ListApoBagMaterials(role, opts)
         if role == "main" then
             seedUid = ResolveSeedUidForPlantItem(item, uid)
             if not ignoreReserve then
-                brewable = SkillUpMod().PlantBrewSurplus(uid, seedUid, count)
+                brewable = WR().PlantBrewSurplus(uid, seedUid, count)
                 if brewable < 1 then
                     return
                 end
@@ -666,8 +715,8 @@ function ASP.BuildApoBrewRow(opts)
                     seedUid = tonumber(SM.ResolveSeedUidForPlant(mainUid, nil)) or 0
                 end
             end
-            surplusMain = tonumber(SkillUpMod().PlantBrewSurplus(mainUid, seedUid, bagMain)) or 0
-            reserveMain = tonumber(SkillUpMod().PlantFeedstockReserve(seedUid, mainUid)) or 0
+            surplusMain = tonumber(WR().PlantBrewSurplus(mainUid, seedUid, bagMain)) or 0
+            reserveMain = tonumber(WR().PlantFeedstockReserve(seedUid, mainUid)) or 0
         end
         StockPiler4.Debug.LogOp("skillup", string.format(
             "apo-brew main=%d container=%d resin=%d x%d craftable=%d tier=%d bag=%d surplus=%d reserve=%d",
@@ -698,7 +747,7 @@ local function ApoResinRefineUses(plantUid, seedUid, spec, bagCount, keepOne)
     if plantUid <= 0 or bagCount < 1 then
         return 0, 0
     end
-    local surplus = SkillUpMod().PlantBrewSurplus(plantUid, seedUid, bagCount)
+    local surplus = WR().PlantBrewSurplus(plantUid, seedUid, bagCount)
     if keepOne == true and surplus > 1 then
         surplus = surplus - 1
     elseif keepOne == true and surplus < 1 then
@@ -1002,7 +1051,7 @@ function ASP.CollectContainerBuyJobs()
     if type(spec) ~= "table" or tostring(spec.role or "") ~= "container" then
         return jobs
     end
-    local want = SkillUpMod().ApoContainerBuyTarget()
+    local want = Rates().ApoContainerBuyTarget()
     local have = ASP.CountApoContainers()
     local deficit = want - have
     if deficit < 1 then
@@ -1025,7 +1074,7 @@ function ASP.CollectContainerBuyJobs()
         StockPiler4.Debug.LogOp("skillup", string.format(
             "buy-container uid=%d skillReq=%d want=%d have=%d deficit=%d nextTier=%d",
             uid, tonumber(target.skillReq) or 0, want, have, deficit,
-            ASP.NextApoTier(SkillUpMod().GetApoSkill())
+            ASP.NextApoTier(Gates().GetApoSkill())
         ))
     end
     return jobs
@@ -1078,32 +1127,3 @@ function ASP.MaybeNotifyApoStall(why)
 end
 
 
-local function ReexportToSkillUp()
-    local SU = StockPiler4.SkillUp
-    if type(SU) ~= "table" then
-        SU = {}
-        StockPiler4.SkillUp = SU
-    end
-    local names = {
-        "ApoTargetTier", "ShouldApoBrew", "NextApoTier",
-        "CountApoContainers", "ShouldApoBuyContainer",
-        "ListApoBagMaterials", "PickApoBagMaterial",
-        "BuildApoBrewRecipe", "BuildApoBrewRow", "GetApoBrewRow",
-        "AppendApoResinRefineIntents", "ResolveBuyContainerTarget",
-        "CollectContainerBuyJobs", "MaybeNotifyApoStall",
-    }
-    for i = 1, #names do
-        local n = names[i]
-        if ASP[n] ~= nil then
-            SU[n] = ASP[n]
-        end
-    end
-    SU._apoStallLatch = ASP._apoStallLatch
-    SU._apoBrewRow = ASP._apoBrewRow
-end
-
-function ASP.SyncSkillUpExports()
-    ReexportToSkillUp()
-end
-
-ReexportToSkillUp()

@@ -213,3 +213,26 @@ function GL.LadderForPlantWatch(spec, plantUid)
     end
     return plantLadder or seedLadder
 end
+
+function GL.GetFamilyLadder(familyKey)
+    local sm = SM()
+    if sm and sm.GetFamilyLadder then
+        return sm.GetFamilyLadder(familyKey)
+    end
+    return nil
+end
+
+function GL.GetFamilyLadderForSpec(spec)
+    local sm = SM()
+    if sm and sm.GetFamilyLadderForSpec then
+        return sm.GetFamilyLadderForSpec(spec)
+    end
+    return nil
+end
+
+function GL.InvalidateCache()
+    local sm = SM()
+    if sm and sm.InvalidateFamilyLadderCache then
+        sm.InvalidateFamilyLadderCache()
+    end
+end

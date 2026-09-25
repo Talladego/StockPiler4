@@ -167,13 +167,18 @@ function Bridge.OnCultivationUpdated()
     if Sch and Sch.SkipUiThisFrame then
         Sch.SkipUiThisFrame()
     end
+    if Sch and Sch.SkipPlanThisFrame then
+        Sch.SkipPlanThisFrame()
+    end
     if Grow and Grow.IsHarvestOpActive and Grow.IsHarvestOpActive() == true then
         if Sch and Sch.ArmHarvestStorm then
             Sch.ArmHarvestStorm()
         end
-        if Sch and Sch.SkipPlanThisFrame then
-            Sch.SkipPlanThisFrame()
-        end
+    end
+    -- Always arm plant quiet on ANY CultivationUpdated (soil/water/nutrient after
+    -- pending clear still piled Footer/RefreshWatch when gated on cultBusy only).
+    if Sch and Sch.ArmPlantQuiet then
+        Sch.ArmPlantQuiet()
     end
     if StockPiler4.Garden and StockPiler4.Garden.OnCultivationUpdated then
         StockPiler4.Garden.OnCultivationUpdated(plotNum)
@@ -186,21 +191,14 @@ function Bridge.OnCultivationUpdated()
     if StockPiler4.LearnBridge and StockPiler4.LearnBridge.OnCultivationUpdated then
         StockPiler4.LearnBridge.OnCultivationUpdated()
     end
-    -- Footer via coalesced flush only — never SyncActionReadiness per plot.
+    -- Never Footer on cult frames — quiet holds coalesce until quiet-end.
     local storm = Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true
-    local quiet = Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true
-    local settling = Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true
-    if not storm and not quiet and not settling then
-        local Bus = StockPiler4.EventBus
-        if Bus and Bus.FireFooterDirty then
-            Bus.FireFooterDirty()
-        end
-    end
     if Grow and Grow.NeedsCurrentStageAdditive and Grow.NeedsCurrentStageAdditive()
-        and Sch and Sch.WakeAutoGrow
+        and Sch and Sch.SetAutoGrowIdle
         and not storm
     then
-        Sch.WakeAutoGrow()
+        -- Fast ticks for next additive; Quiet already holds plan/UI.
+        Sch.SetAutoGrowIdle(false)
     end
     if StockPiler4.Perf and StockPiler4.Perf.End then
         StockPiler4.Perf.End("CultivationUpdated")
@@ -254,13 +252,14 @@ function Bridge.OnTradeSkillUpdated()
             Bridge._skillPrev = nil
             return
         end
-        local SkillUp = StockPiler4.SkillUp
-        if dCult > 0 and SkillUp and SkillUp.OnCultSkillDelta then
-            SkillUp.OnCultSkillDelta(dCult)
+        local Rates = StockPiler4.SkillRates
+        if dCult > 0 and Rates and Rates.OnCultSkillDelta then
+            Rates.OnCultSkillDelta(dCult)
         end
-        if dApo > 0 and SkillUp and SkillUp.OnApoSkillDelta then
-            SkillUp.OnApoSkillDelta(dApo)
+        if dApo > 0 and Rates and Rates.OnApoSkillDelta then
+            Rates.OnApoSkillDelta(dApo)
         end
+
     end
 
     if hashChanged or firstSkillsReady then
@@ -409,21 +408,21 @@ function Bridge.OnUpdateProcessed(timeElapsed)
             StockPiler4.Refine.OnUpdate(timeElapsed)
         end
 
-        -- Scheduler pump (bag -> FrameWork -> Plan -> Watch UI; Orch tick due)
+        -- Scheduler pump (bag -> FrameWork -> Plan -> intent refresh -> Orch -> Watch)
         if StockPiler4.Scheduler and StockPiler4.Scheduler.OnUpdate then
             StockPiler4.Scheduler.OnUpdate(timeElapsed)
         end
 
-        -- Coalesced macro enable sync (footer/cultivation storms).
-        if StockPiler4.Macro and StockPiler4.Macro.DrainEnabledSync then
-            StockPiler4.Macro.DrainEnabledSync()
-        end
-
-        -- Footer after Scheduler so SkipUiHoldFooter can hold this frame.
+        -- Footer after Scheduler so SkipUiHoldFooter / Watch stagger can hold this frame.
+        -- Macro drain AFTER Footer so RequestEnabledSync from Footer cannot Appearance
+        -- on the same frame (Watch → Footer → Macro idle stagger).
         local Sch = StockPiler4.Scheduler
         local holdFooter = Sch and Sch.SkipUiHoldFooter and Sch.SkipUiHoldFooter() == true
         if not holdFooter and Sch and Sch.FlushPendingFooterRefresh then
             Sch.FlushPendingFooterRefresh()
+        end
+        if StockPiler4.Macro and StockPiler4.Macro.DrainEnabledSync then
+            StockPiler4.Macro.DrainEnabledSync()
         end
         if Sch and Sch.ClearSkipUiHoldFooter then
             Sch.ClearSkipUiHoldFooter()

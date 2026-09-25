@@ -15,7 +15,7 @@ Classify.EFFECT_KEYS = {
     "hywouheal", "hywoustr", "hyresist", "hywouarmpen", "hywouinit",
     "hytounocrit", "hyhpregencritdmg", "hywsarmpen",
     -- Non-main plant roles (Plants tab Effect column / filter).
-    "stabilizer", "extender", "multiplier",
+    "stabilizer", "extender", "multiplier", "stimulant",
 }
 
 local EFFECT_SHORT = {
@@ -54,6 +54,7 @@ local EFFECT_SHORT = {
     stabilizer = "Stab",
     extender = "Ext",
     multiplier = "Mult",
+    stimulant = "Stim",
 }
 
 -- Memoize short labels (finite key set).
@@ -204,10 +205,15 @@ local function ClassifyFromDescription(description)
     then
         return "rele"
     end
+    -- Seed "Grows Stimulant" / plant "Apothecary - Stimulant" (before Mult gates).
+    if string.find(descLower, "stimulant", 1, true) then
+        return "stimulant"
+    end
     if string.find(descLower, "increases", 1, true)
         or string.find(descLower, "create", 1, true)
         or string.find(descLower, "used to", 1, true)
         or string.find(descLower, "grows into", 1, true)
+        or string.find(descLower, "grows ", 1, true)
     then
         -- Non-main plant / seed text before stat mains.
         if string.find(descLower, "stabiliz", 1, true) or string.find(descLower, "stability", 1, true) then

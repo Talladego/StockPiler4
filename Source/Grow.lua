@@ -501,6 +501,12 @@ function Grow.InvalidatePlantQueue(opts)
     Grow._plantQueueDirty = true
     Grow._cachedPlantJob = nil
     Grow._plantJobProbed = false
+    local PP = StockPiler4.PlantPlan
+    if PP then
+        PP._pickMemoKey = nil
+        PP._pickMemoJob = nil
+        PP._pickMemoProbed = false
+    end
     local US = StockPiler4.UpgradeSeed
     if US and US.InvalidateUpgradeTargetsCache then
         US.InvalidateUpgradeTargetsCache()
@@ -597,6 +603,15 @@ end
 
 function Grow.HasPendingPlant()
     for _, n in pairs(Grow._pendingPlant) do
+        if (tonumber(n) or 0) > 0 then
+            return true
+        end
+    end
+    return false
+end
+
+function Grow.HasPendingAdditive()
+    for _, n in pairs(Grow._pendingAdditive) do
         if (tonumber(n) or 0) > 0 then
             return true
         end
@@ -781,11 +796,12 @@ function Grow.ExecutePlant(intent, opId)
         tostring(opId or "?")
     ))
     if tostring(job.plantReason or "") == "skill_up" then
-        local SkillUp = StockPiler4.SkillUp
-        if SkillUp and SkillUp.NoteCultAttempt
-            and SkillUp.IsCultEnabled and SkillUp.IsCultEnabled() == true
+        local Rates = StockPiler4.SkillRates
+        local Gates = StockPiler4.SkillUpGates
+        if Rates and Rates.NoteCultAttempt
+            and Gates and Gates.IsCultEnabled and Gates.IsCultEnabled() == true
         then
-            SkillUp.NoteCultAttempt({ seedUid = seedUid })
+            Rates.NoteCultAttempt({ seedUid = seedUid })
         end
     end
     return done(true)
@@ -952,8 +968,24 @@ function Grow.TryAdditive(opId)
                 tostring(pick.slot),
                 tostring(opId or "?")
             ))
-            if Sch and Sch.WakeAutoGrow then
-                Sch.WakeAutoGrow()
+            -- Same quiet envelope as PlantSeed: CultivationUpdated soil/water/nutrient
+            -- storms were Footer/RefreshWatch hitches without ArmPlantQuiet (libperf).
+            if Sch and Sch.ArmPlantQuiet then
+                Sch.ArmPlantQuiet()
+            end
+            if Sch and Sch.SkipPlanThisFrame then
+                Sch.SkipPlanThisFrame()
+            end
+            if Sch and Sch.SkipUiThisFrame then
+                Sch.SkipUiThisFrame()
+            end
+            if Sch and Sch.SuppressInventorySideEffects then
+                Sch.SuppressInventorySideEffects(2)
+            end
+            -- Keep 1s AutoGrow ticks for the next additive; do not InvalidatePlantQueue
+            -- (WakeAutoGrow) — that forced BufferFlags/CollectIntents mid-grow.
+            if Sch and Sch.SetAutoGrowIdle then
+                Sch.SetAutoGrowIdle(false)
             end
         else
             Grow.ClearPendingAdditive(plotNum)
@@ -992,21 +1024,10 @@ function Grow.ShouldHoldPlantForReadyHarvest()
 end
 
 local function NudgeHarvestReadiness()
-    local Sch = StockPiler4.Scheduler
-    local hold = (Sch and Sch.SkipUiThisFrameActive and Sch.SkipUiThisFrameActive() == true)
-        or (Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true)
-        or (Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
-        or (Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true)
+    -- Coalesce only — never immediate SyncActionReadiness on harvest op-lock edges.
     local Bus = StockPiler4.EventBus
     if Bus and Bus.FireFooterDirty then
-        if hold then
-            Bus.FireFooterDirty()
-        else
-            Bus.FireFooterDirty({ immediate = true })
-        end
-    end
-    if hold then
-        return
+        Bus.FireFooterDirty()
     end
 end
 
@@ -1052,17 +1073,32 @@ end
 function Grow.CanHarvestNow()
     -- Op-lock: button must grey; PrepareHarvest alone returned false while lit.
     if Grow.IsHarvestOpActive() then
+        Grow._canHarvestCacheKey = nil
         return false
     end
     if StockPiler4.Brew and StockPiler4.Brew.BlocksHarvest and StockPiler4.Brew.BlocksHarvest() == true then
+        Grow._canHarvestCacheKey = nil
         return false
     end
     local Caps = StockPiler4.TradeSkillCaps
     if Caps and Caps.CanAutoGrow and Caps.CanAutoGrow() ~= true then
+        Grow._canHarvestCacheKey = nil
         return false
     end
+    -- Key on GetGen (stage-aware), not GetPlanGen. Growing→GROWN is a soft
+    -- stage pulse: planGen stays put while gardenGen bumps, so a planGen-keyed
+    -- cache stayed false with 4 ready plots (0.4.28 soak).
+    local Garden = StockPiler4.Garden
+    local gardenGen = Garden and Garden.GetGen and Garden.GetGen() or 0
+    local key = tostring(gardenGen)
+    if Grow._canHarvestCacheKey == key and Grow._canHarvestCached ~= nil then
+        return Grow._canHarvestCached == true
+    end
     local ready = GetReadyHarvestPlots()
-    return #ready > 0
+    local ok = #ready > 0
+    Grow._canHarvestCacheKey = key
+    Grow._canHarvestCached = ok
+    return ok
 end
 
 --- True when every planted plot is grown (empty ignored). Mid-batch stays lit without re-chime.
@@ -1134,41 +1170,31 @@ function Grow.MaybeNotifyHarvestReady()
     local canHarvest = Grow.CanHarvestNow() == true
     local ready = allReady == true and canHarvest == true
     local wasReady = Grow._harvestReadyLatched == true
-    local Sch = StockPiler4.Scheduler
-    -- Never SyncActionReadiness (CanBrewNow + Macro.Appearance) during cult storms —
-    -- that was the 10s Footer/Macro trail piled on CultivationUpdated x4.
-    local holdFooter = (Sch and Sch.SkipUiThisFrameActive and Sch.SkipUiThisFrameActive() == true)
-        or (Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true)
-        or (Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
-        or (Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true)
-    local function NudgeFooter(forceImmediate)
+    -- Never SyncActionReadiness (CanBrewNow + Macro.Appearance) on this path —
+    -- immediate Footer was the 10s Macro trail piled on CultivationUpdated x4.
+    local function NudgeFooter()
         local Bus = StockPiler4.EventBus
-        if not Bus or not Bus.FireFooterDirty then
-            return
-        end
-        if holdFooter or forceImmediate ~= true then
+        if Bus and Bus.FireFooterDirty then
             Bus.FireFooterDirty()
-            return
         end
-        Bus.FireFooterDirty({ immediate = true })
     end
     -- Enable Harvest as soon as any plot is harvestable (not only all-planted latch).
     if canHarvest then
         if Grow._canHarvestLatched ~= true then
-            NudgeFooter(true)
+            NudgeFooter()
             Grow._canHarvestLatched = true
         else
-            NudgeFooter(false)
+            NudgeFooter()
         end
     elseif Grow._canHarvestLatched == true then
         Grow._canHarvestLatched = false
-        NudgeFooter(false)
+        NudgeFooter()
     end
     if ready then
         if not wasReady then
-            NudgeFooter(true)
+            NudgeFooter()
         else
-            NudgeFooter(false)
+            NudgeFooter()
         end
         Grow._harvestReadyLatched = true
         if Grow._harvestReadyChatSent ~= true then
@@ -1187,7 +1213,7 @@ function Grow.MaybeNotifyHarvestReady()
         end
     else
         if wasReady then
-            NudgeFooter(false)
+            NudgeFooter()
         end
         Grow._harvestReadyLatched = false
         Grow._harvestReadyChatSent = false
@@ -1226,9 +1252,8 @@ local function RowArmedForAutoGrow(row)
     if pk == "" then
         return false
     end
-    local RS = StockPiler4.RecipeSpec
-    if RS and RS.ShouldAutoGrowPotion then
-        return RS.ShouldAutoGrowPotion(pk, nil) == true
+    if Watch.ShouldAutoGrowPotion then
+        return Watch.ShouldAutoGrowPotion(pk, nil) == true
     end
     local w = Watch.GetWatch and Watch.GetWatch(pk)
     return type(w) == "table" and w.enabled == true and w.autoGrow == true
@@ -1455,8 +1480,9 @@ function Grow.WakeAfterHarvest(plotNum, opts)
     end
     -- Extend Cult skill-up pending window after harvest (skill may tick then).
     -- extendOnly: do not start a new attempt if plant-arm pending expired.
-    local SkillUp = StockPiler4.SkillUp
-    if SkillUp and SkillUp.NoteCultAttempt and SkillUp.IsCultEnabled and SkillUp.IsCultEnabled() then
+    local Rates = StockPiler4.SkillRates
+    local Gates = StockPiler4.SkillUpGates
+    if Rates and Rates.NoteCultAttempt and Gates and Gates.IsCultEnabled and Gates.IsCultEnabled() then
         local seedUid = 0
         local Garden = StockPiler4.Garden
         if Garden and Garden.GetPlot then
@@ -1471,7 +1497,7 @@ function Grow.WakeAfterHarvest(plotNum, opts)
                 end
             end
         end
-        SkillUp.NoteCultAttempt({ seedUid = seedUid, extendOnly = true })
+        Rates.NoteCultAttempt({ seedUid = seedUid, extendOnly = true })
     end
     LogOnce(
         "harvest-wake-" .. tostring(plotNum or 0),
@@ -1522,49 +1548,4 @@ function Grow.OnCultivationUpdated(plotNum)
         end
     end
     Grow.MaybeNotifyHarvestReady()
-end
-
-----------------------------------------------------------------
--- Dump
-----------------------------------------------------------------
-
-function Grow.DumpDiagnostics(emit)
-    emit = type(emit) == "function" and emit or function(msg)
-        if StockPiler4.Debug and StockPiler4.Debug.Print then
-            StockPiler4.Debug.Print(msg)
-        end
-    end
-    emit("=== grow plan ===")
-    emit("enabled=" .. tostring(Grow.IsEnabled()))
-    emit("fillBlocked=" .. tostring(Grow.IsFillBlocked())
-        .. " wait=" .. tostring(Grow._plantWaitTicks or 0))
-    emit("emptyPlot=" .. tostring(Grow.HasEmptyPlot())
-        .. " seeds=" .. tostring(Grow.HasSeedsForNextPlant()))
-    emit("bufferSatisfied=" .. tostring(Grow.IsSeedBufferSatisfied())
-        .. " pendingRefine=" .. tostring(Grow.HasPendingBufferRefine())
-        .. " bufferShort=" .. tostring(Grow.HasAnyBufferShort()))
-    emit("holdHarvestBatch=" .. tostring(Grow.ShouldHoldPlantForReadyHarvest())
-        .. " canHarvest=" .. tostring(Grow.CanHarvestNow()))
-    emit("lastPlantedSeedUid=" .. tostring(Grow._lastPlantedSeedUid or 0))
-    local job = Grow._cachedPlantJob
-    if type(job) == "table" then
-        emit(string.format(
-            "job seedUid=%s role=%s watch=%s deficit=%s reason=%s mode=%s",
-            tostring(job.seedUid),
-            tostring(job.role),
-            tostring(job.watchKey),
-            tostring(job.potionDeficit or job.deficit),
-            tostring(job.plantReason),
-            tostring(job.pickMode)
-        ))
-    else
-        emit("job=(none)")
-    end
-    local ready = GetReadyHarvestPlots()
-    emit("readyPlots=" .. table.concat(ready, ","))
-    emit("=== end grow plan ===")
-end
-
-function Grow.DumpGrowPlan(emit)
-    Grow.DumpDiagnostics(emit)
 end

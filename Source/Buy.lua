@@ -847,21 +847,24 @@ function Buy.CollectBuyJobs()
     local skillHash = Caps and Caps.LevelsHash and Caps.LevelsHash() or ""
     local watchGen = StockPiler4.Watch and StockPiler4.Watch.GetGen and StockPiler4.Watch.GetGen() or 0
     local skillUpHash = "0"
-    local SkillUp = StockPiler4.SkillUp
-    if SkillUp then
+    local Gates = StockPiler4.SkillUpGates
+    local ASP = StockPiler4.ApoSkillPlan
+    local Rates = StockPiler4.SkillRates
+    if Gates then
         local parts = {}
-        if SkillUp.IsCultEnabled and SkillUp.IsCultEnabled() == true then
-            parts[#parts + 1] = "c:" .. tostring(SkillUp.TargetMaxSkill and SkillUp.TargetMaxSkill() or 0)
+        if Gates.IsCultEnabled and Gates.IsCultEnabled() == true then
+            parts[#parts + 1] = "c:" .. tostring(Gates.TargetMaxSkill and Gates.TargetMaxSkill() or 0)
         end
-        if SkillUp.IsApoEnabled and SkillUp.IsApoEnabled() == true then
-            parts[#parts + 1] = "a:" .. tostring(SkillUp.ApoTargetTier and SkillUp.ApoTargetTier() or 0)
-                .. "/" .. tostring(SkillUp.ApoContainerBuyTarget and SkillUp.ApoContainerBuyTarget() or 0)
-                .. "/" .. tostring(SkillUp.CountApoContainers and SkillUp.CountApoContainers() or 0)
+        if Gates.IsApoEnabled and Gates.IsApoEnabled() == true then
+            parts[#parts + 1] = "a:" .. tostring(ASP and ASP.ApoTargetTier and ASP.ApoTargetTier() or 0)
+                .. "/" .. tostring(Rates and Rates.ApoContainerBuyTarget and Rates.ApoContainerBuyTarget() or 0)
+                .. "/" .. tostring(ASP and ASP.CountApoContainers and ASP.CountApoContainers() or 0)
         end
         if #parts > 0 then
             skillUpHash = table.concat(parts, "|")
         end
     end
+
     local UpgradeSeed = StockPiler4.UpgradeSeed
     local upgradeHash = "0"
     if UpgradeSeed and UpgradeSeed.IsEnabled and UpgradeSeed.IsEnabled() == true then
@@ -880,10 +883,6 @@ function Buy.CollectBuyJobs()
             allowPlantBuys = Buy._allowPlantBuys == true,
             fairFocus = true,
         }) or {}
-    elseif StockPiler4.RecipeSpec and StockPiler4.RecipeSpec.CollectVendorBuyJobs then
-        jobs = StockPiler4.RecipeSpec.CollectVendorBuyJobs({
-            allowPlantBuys = Buy._allowPlantBuys == true,
-        }) or {}
     end
 
     -- Reject growables when CanAutoGrow (allowPlantBuys false).
@@ -899,14 +898,15 @@ function Buy.CollectBuyJobs()
         jobs = filtered
     end
 
-    -- SkillUp Cult: buy matching main seeds when idle and bags are empty.
-    local SkillUp = StockPiler4.SkillUp
-    if SkillUp and SkillUp.CollectBuyJobs then
-        local skillJobs = SkillUp.CollectBuyJobs() or {}
+    -- Cult SkillUp: buy matching main seeds when idle and bags are empty.
+    local CSP = StockPiler4.CultSkillPlan
+    if CSP and CSP.CollectBuyJobs then
+        local skillJobs = CSP.CollectBuyJobs() or {}
         for i = 1, #skillJobs do
             jobs[#jobs + 1] = skillJobs[i]
         end
     end
+
 
     -- Upgrade Seed: buy lowest family rung / top up climb seed.
     local UpgradeSeed = StockPiler4.UpgradeSeed

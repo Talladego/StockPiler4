@@ -1,7 +1,10 @@
 ----------------------------------------------------------------
 -- StockPiler4 Core/Scheduler -- coalesce heavy work, frame budgets
--- UPDATE_PROCESSED pump: bag flush -> PlanRebuild -> Watch UI (one heavy).
--- Orch tick on interval. Bag/plan coalesce via PLAN_DEBOUNCE_SEC storm window.
+-- UPDATE_PROCESSED pump: bag flush -> FrameWork.Pump -> PlanRebuild
+-- -> IntentRefresh -> Orch -> Watch UI (one heavy).
+-- Footer/Macro stagger after Watch (Bridge drains Macro after Footer).
+-- Controlled prewarm (WarmHave/Demand/SeedLines) with snapGen tokens;
+-- hold PlanRebuild/Watch while IsPrewarmBusy (no AutoGrow/Watch desync).
 -- Wake vs snap: only wake forces plant-queue invalidate.
 ----------------------------------------------------------------
 
@@ -14,14 +17,13 @@ Sch.BAG_COALESCE_SEC = 2.0
 Sch.PLAN_MAX_WAIT_SEC = 0.5
 Sch.PLAN_COALESCE_WHEN_AWAKE_SEC = 3.0
 Sch.PLAN_MIN_GAP_SEC = 2.0
-Sch.PLAN_WARM_HOLD_MAX_SEC = 3.0
+Sch.PLAN_WARM_HOLD_MAX_SEC = 5.0
 Sch.SESSION_SETTLE_SEC = 2.5
 Sch.AUTO_TICK_SEC = 1.0
 Sch.AUTO_TICK_IDLE_SEC = 5.0
 Sch.HARVEST_STORM_MIN_SEC = 1.5
--- Cover plant/refine inventory + CultivationUpdated lag (0.75 left WarmHave
--- miss storms between IssueOne and the next orch tick).
-Sch.PLANT_QUIET_BASE_SEC = 1.25
+-- Cover plant/refine inventory + CultivationUpdated lag (soil/water/nutrient x4).
+Sch.PLANT_QUIET_BASE_SEC = 2.5
 Sch.PLAN_DEBOUNCE_SEC = 0.05
 
 Sch._bagDue = false
@@ -31,17 +33,23 @@ Sch._bagNeedQueue = false
 Sch._planDue = false
 Sch._planAt = 0
 Sch._lastPlanBuiltAt = 0
+Sch._planWarmHoldAt = 0
 Sch._autoAccum = 0
 Sch._autoGrowFast = true
 Sch._suppressInvTicks = 0
 Sch._pendingAfterSuppress = { bagFlush = false, bagQueue = false, plan = false }
+Sch._pendingPrewarmAfterQuiet = false
+Sch._pendingPrewarmReason = nil
 Sch._initialized = false
 Sch._harvestStormUntil = 0
 Sch._plantQuietUntil = 0
-Sch._skipPlanThisFrame = false
-Sch._skipUiThisFrame = false
-Sch._skipUiHoldFooter = false
-Sch._skipOrchThisFrame = false
+-- One-frame skip latch (plan / ui / orch). Cult storm + plant quiet stay separate.
+Sch._skipThisFrame = { plan = false, ui = false, uiHoldFooter = false, orch = false }
+-- Settle / first-paint stagger: Watch → Footer (no Macro) → Macro idle drain.
+Sch._deferFooterUntilFrame = 0
+Sch._deferMacroUntilFrame = 0
+-- Plant/refine intent refresh: never sync on Orch execute frame; drain under one-heavy.
+Sch._pendingIntentRefresh = false
 Sch._busTokens = nil
 
 local function Now()
@@ -88,6 +96,59 @@ local function PipelineDebounceActive()
     return now < untilT
 end
 
+--- Enqueue FrameWork prewarm jobs (WarmHave collect/bag, Demand, SeedLines).
+--- Deferred during plant quiet / harvest storm — never bag-walk under CultivationUpdated.
+local function RequestCachePrewarm(reason)
+    if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
+        Sch._pendingPrewarmAfterQuiet = true
+        Sch._pendingPrewarmReason = reason
+        return
+    end
+    if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+        Sch._pendingPrewarmAfterQuiet = true
+        Sch._pendingPrewarmReason = reason
+        return
+    end
+    local FW = StockPiler4.FrameWork
+    if not FW or not FW.StartOnce then
+        return
+    end
+    local snapGen = 0
+    if StockPiler4.Inventory and StockPiler4.Inventory.GetSnapGen then
+        snapGen = tonumber(StockPiler4.Inventory.GetSnapGen()) or 0
+    end
+    local genKey = tostring(snapGen) .. ":" .. tostring(reason or "")
+    if FW.EnqueueWarmHave then
+        FW.EnqueueWarmHave(genKey)
+    end
+    if FW.EnqueueDemand then
+        FW.EnqueueDemand(genKey)
+    end
+    if FW.EnqueueSeedLines then
+        FW.EnqueueSeedLines(genKey)
+    end
+end
+
+local function FlushPendingPrewarmAfterQuiet()
+    if Sch._pendingPrewarmAfterQuiet ~= true then
+        return
+    end
+    if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
+        return
+    end
+    if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+        return
+    end
+    Sch._pendingPrewarmAfterQuiet = false
+    local reason = Sch._pendingPrewarmReason or "quiet-end"
+    Sch._pendingPrewarmReason = nil
+    local Planner = StockPiler4.Planner
+    if Planner and Planner.InvalidateHaveCacheAfterQuiet then
+        Planner.InvalidateHaveCacheAfterQuiet()
+    end
+    RequestCachePrewarm(reason)
+end
+
 local function DecaySuppressInventorySideEffects()
     local n = tonumber(Sch._suppressInvTicks) or 0
     if n <= 0 then
@@ -126,6 +187,14 @@ local function FlushBagIfDue()
     if Sch._bagDue ~= true then
         return false
     end
+    if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
+        Sch._bagAt = Now() + Sch.BAG_COALESCE_SEC
+        return false
+    end
+    if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+        Sch._bagAt = Now() + Sch.BAG_COALESCE_SEC
+        return false
+    end
     if Now() < (tonumber(Sch._bagAt) or 0) then
         return false
     end
@@ -148,11 +217,21 @@ local function FlushBagIfDue()
     if needQueue then
         Sch.EnqueuePlanRebuild()
     end
+    RequestCachePrewarm("bag-flush")
     return true
 end
 
 local function RebuildPlanIfDue()
     if Sch._planDue ~= true then
+        return false
+    end
+    if Sch.SkipPlanThisFrameActive and Sch.SkipPlanThisFrameActive() == true then
+        return false
+    end
+    if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
+        return false
+    end
+    if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
         return false
     end
     local Orch = StockPiler4.Orchestrator
@@ -170,6 +249,34 @@ local function RebuildPlanIfDue()
         return false
     end
     local Planner = StockPiler4.Planner
+    local FW = StockPiler4.FrameWork
+    -- Hold full rebuild while FrameWork prewarm is mid-flight (collect/bag/demand/seeds).
+    if FW and FW.IsPrewarmBusy and FW.IsPrewarmBusy() == true then
+        return false
+    end
+    if FW and FW.Busy and FW.Busy() == true then
+        return false
+    end
+    -- Hold full rebuild until WarmHave prewarm finishes (never publish partial plan).
+    if Planner and Planner.CanCheapOrGardenPatch and Planner.CanCheapOrGardenPatch() ~= true then
+        local warm = Planner.IsHaveCacheWarmForSnap and Planner.IsHaveCacheWarmForSnap() == true
+        if not warm then
+            RequestCachePrewarm("plan-hold-warm")
+            if FW and FW.IsPrewarmBusy and FW.IsPrewarmBusy() == true then
+                return false
+            end
+            local holdMax = tonumber(Sch.PLAN_WARM_HOLD_MAX_SEC) or 3.0
+            local holdStart = tonumber(Sch._planWarmHoldAt) or 0
+            if holdStart <= 0 then
+                Sch._planWarmHoldAt = Now()
+                holdStart = Sch._planWarmHoldAt
+            end
+            if (Now() - holdStart) < holdMax then
+                return false
+            end
+        end
+    end
+    Sch._planWarmHoldAt = 0
     Sch._planDue = false
     Sch._planAt = 0
     Sch._lastPlanBuiltAt = Now()
@@ -193,12 +300,124 @@ local function FlushWatchUiIfDue(didHeavy)
     if didHeavy == true then
         return false
     end
-    if Sch.IsSessionSettling and Sch.IsSessionSettling() == true then
+    if Sch.SkipUiThisFrameActive and Sch.SkipUiThisFrameActive() == true then
+        return false
+    end
+    -- Session settle: hold Watch only while window is closed (open must paint;
+    -- OnShow used to sync RefreshWatch+Footer+Macro on one frame).
+    local windowOpen = DoesWindowExist("StockPiler4Window")
+        and WindowGetShowing("StockPiler4Window") == true
+    if not windowOpen
+        and Sch.IsSessionSettling and Sch.IsSessionSettling() == true
+    then
+        return false
+    end
+    if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
+        return false
+    end
+    if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+        return false
+    end
+    local FW = StockPiler4.FrameWork
+    if FW and FW.IsPrewarmBusy and FW.IsPrewarmBusy() == true then
+        return false
+    end
+    if FW and FW.Busy and FW.Busy() == true then
         return false
     end
     local Ui = StockPiler4.Ui
-    if Ui and Ui.FlushWatchUiIfDirty then
-        return Ui.FlushWatchUiIfDirty() == true
+    if Ui and Ui.FlushWatchUiIfDirty and Ui.FlushWatchUiIfDirty() == true then
+        if Sch.NoteUiHeavy then
+            Sch.NoteUiHeavy("watch")
+        end
+        return true
+    end
+    return false
+end
+
+--- After Watch paint: Footer next idle frame; Macro the frame after that.
+--- After Footer: Macro next idle frame. Never stack Watch+Footer+Macro.Appearance.
+function Sch.NoteUiHeavy(kind)
+    kind = tostring(kind or "")
+    local fc = tonumber(StockPiler4.FrameCounter) or 0
+    if kind == "watch" then
+        local deferFooter = fc + 1
+        local deferMacro = fc + 2
+        if deferFooter > (tonumber(Sch._deferFooterUntilFrame) or 0) then
+            Sch._deferFooterUntilFrame = deferFooter
+        end
+        if deferMacro > (tonumber(Sch._deferMacroUntilFrame) or 0) then
+            Sch._deferMacroUntilFrame = deferMacro
+        end
+    elseif kind == "footer" then
+        local deferMacro = fc + 1
+        if deferMacro > (tonumber(Sch._deferMacroUntilFrame) or 0) then
+            Sch._deferMacroUntilFrame = deferMacro
+        end
+    end
+end
+
+function Sch.ShouldDeferFooterFlush()
+    local fc = tonumber(StockPiler4.FrameCounter) or 0
+    local untilF = tonumber(Sch._deferFooterUntilFrame) or 0
+    return untilF > 0 and fc < untilF
+end
+
+--- Hold Macro.Appearance during quiet / settle / SkipUi and until stagger frame.
+function Sch.ShouldDeferMacroDrain()
+    if Sch.SkipUiThisFrameActive and Sch.SkipUiThisFrameActive() == true then
+        return true
+    end
+    if Sch.SkipUiHoldFooter and Sch.SkipUiHoldFooter() == true then
+        return true
+    end
+    if Sch.IsSessionSettling and Sch.IsSessionSettling() == true then
+        return true
+    end
+    if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
+        return true
+    end
+    if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+        return true
+    end
+    local fc = tonumber(StockPiler4.FrameCounter) or 0
+    local untilF = tonumber(Sch._deferMacroUntilFrame) or 0
+    return untilF > 0 and fc < untilF
+end
+
+--- Coalesce plant/refine intent refresh onto an idle one-heavy frame (after quiet).
+function Sch.EnqueuePlantIntentRefresh()
+    Sch._pendingIntentRefresh = true
+end
+
+local function FlushPendingIntentRefresh(didHeavy)
+    if Sch._pendingIntentRefresh ~= true then
+        return false
+    end
+    if didHeavy == true then
+        return false
+    end
+    if Sch.SkipPlanThisFrameActive and Sch.SkipPlanThisFrameActive() == true then
+        return false
+    end
+    if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
+        return false
+    end
+    if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+        return false
+    end
+    if Sch.IsSessionSettling and Sch.IsSessionSettling() == true then
+        return false
+    end
+    local FW = StockPiler4.FrameWork
+    if FW and FW.IsPrewarmBusy and FW.IsPrewarmBusy() == true then
+        return false
+    end
+    Sch._pendingIntentRefresh = false
+    local Planner = StockPiler4.Planner
+    if Planner and Planner.RefreshPlantRefineIntentsNow then
+        Planner.RefreshPlantRefineIntentsNow()
+        return true
     end
     return false
 end
@@ -284,9 +503,27 @@ local function OnInventorySnapshot()
         if hasPlantWork or ShouldWakeAutoGrowUrgent() then
             Sch._autoGrowFast = true
         end
-    end
-    if Refine and Refine.InvalidateBufferFlags then
-        Refine.InvalidateBufferFlags()
+        -- Orch plants from PlanSnapshot.plantIntent only. Snap used to dirty the
+        -- Grow probe cache without refreshing the snapshot, so empty plots sat
+        -- idle until /sp4 dumpall force-Built a new plantIntent.
+        if hasPlantWork then
+            local Planner = StockPiler4.Planner
+            if Planner and Planner.NeedsPlantIntentRefresh
+                and Planner.NeedsPlantIntentRefresh() == true
+            then
+                -- Never sync intent refresh on snap frame (may share UPDATE with Orch plant).
+                if Sch.EnqueuePlantIntentRefresh then
+                    Sch.EnqueuePlantIntentRefresh()
+                elseif Sch.EnqueuePlanRebuild then
+                    Sch.EnqueuePlanRebuild({ nudge = true })
+                end
+            end
+        end
+        -- BufferFlags only when not quiet/storm — snap invalidates during
+        -- plant/refine forced BufferFlags rebuild every orch tick (libperf).
+        if Refine and Refine.InvalidateBufferFlags then
+            Refine.InvalidateBufferFlags()
+        end
     end
     Sch.MarkWatchUiDirty()
 end
@@ -427,7 +664,7 @@ function Sch.IsHarvestStorm()
     if now >= untilT then
         Sch._harvestStormUntil = 0
         -- Storm end: skip plan+UI this frame; enqueue coalesced rebuild for later.
-        -- Do not InvalidatePlantQueue / prewarm here (that piled WarmHave + Build
+        -- Do not InvalidatePlantQueue here (that piled WarmHave + Build
         -- + Watch flush into the first post-harvest / replant hitch).
         Sch.SkipPlanThisFrame()
         Sch.SkipUiThisFrame()
@@ -435,6 +672,7 @@ function Sch.IsHarvestStorm()
             Sch.EnqueuePlanRebuild({ nudge = true })
         end
         Sch.MarkWatchUiDirty()
+        FlushPendingPrewarmAfterQuiet()
     end
     return false
 end
@@ -450,6 +688,7 @@ function Sch.IsPlantQuiet()
     end
     if now >= untilT then
         Sch._plantQuietUntil = 0
+        FlushPendingPrewarmAfterQuiet()
     end
     return false
 end
@@ -472,27 +711,37 @@ function Sch.ArmPlantQuiet(seconds)
     end
 end
 
+local function SkipFlags()
+    local skip = Sch._skipThisFrame
+    if type(skip) ~= "table" then
+        skip = { plan = false, ui = false, uiHoldFooter = false, orch = false }
+        Sch._skipThisFrame = skip
+    end
+    return skip
+end
+
 function Sch.SkipPlanThisFrame()
     ArmPipelineDebounce()
-    Sch._skipPlanThisFrame = true
+    SkipFlags().plan = true
 end
 
 function Sch.SkipUiThisFrame()
     ArmPipelineDebounce()
-    Sch._skipUiThisFrame = true
-    Sch._skipUiHoldFooter = true
+    local skip = SkipFlags()
+    skip.ui = true
+    skip.uiHoldFooter = true
 end
 
 function Sch.SkipOrchThisFrame()
-    Sch._skipOrchThisFrame = true
+    SkipFlags().orch = true
 end
 
 function Sch.SkipPlanThisFrameActive()
-    return Sch._skipPlanThisFrame == true
+    return SkipFlags().plan == true
 end
 
 function Sch.SkipUiThisFrameActive()
-    return Sch._skipUiThisFrame == true
+    return SkipFlags().ui == true
 end
 
 --- Hold Watch paint for a short window after reload / loading-end so FrameWork
@@ -512,6 +761,7 @@ function Sch.BeginSessionSettle(seconds)
     if untilFrame > curFrame then
         Sch._sessionSettleUntilFrame = untilFrame
     end
+    Sch._sessionSettleArmed = true
 end
 
 function Sch.IsSessionSettling()
@@ -539,12 +789,44 @@ function Sch.IsSessionSettling()
     return false
 end
 
+--- One-shot after reload settle: refresh plantIntent + wake AutoGrow so upgrade
+--- planting does not wait for /sp4 dumpall.
+local function MaybeFinishSessionSettle()
+    if Sch._sessionSettleArmed ~= true then
+        return
+    end
+    if Sch.IsSessionSettling() == true then
+        return
+    end
+    Sch._sessionSettleArmed = false
+    local Watch = StockPiler4.Watch
+    if not (Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() == true) then
+        return
+    end
+    local Planner = StockPiler4.Planner
+    if Planner and Planner.NeedsPlantIntentRefresh
+        and Planner.NeedsPlantIntentRefresh() == true
+    then
+        -- Idle drain under one-heavy; do not stack with post-settle Watch flush.
+        if Sch.EnqueuePlantIntentRefresh then
+            Sch.EnqueuePlantIntentRefresh()
+        elseif Sch.EnqueuePlanRebuild then
+            Sch.EnqueuePlanRebuild({ nudge = true })
+        end
+    elseif Sch.EnqueuePlanRebuild then
+        Sch.EnqueuePlanRebuild({ nudge = true })
+    end
+    if Sch.WakeAutoGrow then
+        Sch.WakeAutoGrow()
+    end
+end
+
 function Sch.SkipUiHoldFooter()
-    return Sch._skipUiHoldFooter == true
+    return SkipFlags().uiHoldFooter == true
 end
 
 function Sch.ClearSkipUiHoldFooter()
-    Sch._skipUiHoldFooter = false
+    SkipFlags().uiHoldFooter = false
 end
 
 function Sch.EnqueueBagFlush(needQueue)
@@ -646,6 +928,9 @@ function Sch.RequestFooterRefresh(payload)
 end
 
 function Sch.FlushPendingFooterRefresh()
+    if Sch.ShouldDeferFooterFlush and Sch.ShouldDeferFooterFlush() == true then
+        return
+    end
     local Ui = StockPiler4.Ui
     if Ui and Ui.FlushPendingFooterRefresh then
         Ui.FlushPendingFooterRefresh()
@@ -736,20 +1021,38 @@ function Sch.OnUpdate(timeElapsed)
     if Sch.IsPlantQuiet then
         Sch.IsPlantQuiet()
     end
+    MaybeFinishSessionSettle()
 
     local didHeavy = false
     if FlushBagIfDue() then
         didHeavy = true
     end
+    local Orch = StockPiler4.Orchestrator
+    local brewSession = Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true
+    local skip = SkipFlags()
+    local skipPump = brewSession
+        or skip.plan == true
+        or (Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true)
+        or (Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
+    if not didHeavy and not skipPump
+        and StockPiler4.FrameWork and StockPiler4.FrameWork.Pump
+        and StockPiler4.FrameWork.Pump() == true
+    then
+        didHeavy = true
+    end
     if not didHeavy and RebuildPlanIfDue() then
         didHeavy = true
     end
-    Sch._skipPlanThisFrame = false
-    FlushWatchUiIfDue(didHeavy)
-    Sch._skipUiThisFrame = false
+    -- Intent refresh after quiet, under one-heavy — never same frame as Orch plant/additive.
+    if not didHeavy and FlushPendingIntentRefresh(false) then
+        didHeavy = true
+    end
 
+    -- Orch before Watch flush so PlantSeed/AddAdditive nested CultivationUpdated
+    -- can SkipUi before RefreshWatch (was: flush then plant → Watch painted first).
     Sch._autoAccum = (tonumber(Sch._autoAccum) or 0) + (tonumber(timeElapsed) or 0)
     local tickSec = AutoTickIntervalSec()
+    local didOrch = false
     if Sch._autoAccum >= tickSec then
         Sch._autoAccum = Sch._autoAccum - tickSec
         if StockPiler4.Refine and StockPiler4.Refine.DecayRefineWaitTicks then
@@ -764,16 +1067,27 @@ function Sch.OnUpdate(timeElapsed)
         if StockPiler4.Orchestrator and StockPiler4.Orchestrator.DecayFillBlocked then
             StockPiler4.Orchestrator.DecayFillBlocked()
         end
-        local skipOrch = Sch._skipOrchThisFrame == true
-        Sch._skipOrchThisFrame = false
+        local skipOrch = skip.orch == true
+        skip.orch = false
         if not didHeavy and not skipOrch
             and StockPiler4.Orchestrator and StockPiler4.Orchestrator.Tick
         then
             StockPiler4.Orchestrator.Tick()
+            didOrch = true
+            -- Plant/additive nested cult may have armed SkipUi; keep hold for Watch/Footer.
+            if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+                Sch.SkipUiThisFrame()
+                Sch.SkipPlanThisFrame()
+            end
         end
     else
-        Sch._skipOrchThisFrame = false
+        skip.orch = false
     end
+
+    -- One heavy: if orch ran, do not also Flatten Watch this frame.
+    skip.plan = false
+    FlushWatchUiIfDue(didHeavy or didOrch)
+    skip.ui = false
 end
 
 function Sch.Initialize()

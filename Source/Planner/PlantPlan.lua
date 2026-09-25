@@ -699,7 +699,8 @@ local function CollectPlantWatchOrder(RS)
         if potionKey == "" or deficit <= 0 or type(recipe) ~= "table" then
             return
         end
-        if RS.ShouldAutoGrowPotion and RS.ShouldAutoGrowPotion(potionKey, nil) ~= true then
+        local WatchAG = StockPiler4.Watch
+        if WatchAG and WatchAG.ShouldAutoGrowPotion and WatchAG.ShouldAutoGrowPotion(potionKey, nil) ~= true then
             return
         end
         have = tonumber(have) or 0
@@ -759,7 +760,8 @@ local function CollectPlantWatchOrder(RS)
         local watches = Watch and Watch.GetWatches and Watch.GetWatches() or {}
         if type(watches) == "table" then
             for watchKey, watch in pairs(watches) do
-                if RS.ShouldAutoGrowPotion and RS.ShouldAutoGrowPotion(watchKey, watch) == true then
+                local WatchAG = StockPiler4.Watch
+                if WatchAG and WatchAG.ShouldAutoGrowPotion and WatchAG.ShouldAutoGrowPotion(watchKey, watch) == true then
                     local resolved = RS.ResolveWatchPotion and RS.ResolveWatchPotion(watchKey)
                     local potion = resolved and resolved.potion
                     local recipe = RS.RecipeSpecForPotion and RS.RecipeSpecForPotion(watchKey)
@@ -1124,11 +1126,26 @@ end
 
 function PlantPlan.PickPlantJob(opts)
     opts = type(opts) == "table" and opts or {}
+    -- Same-frame / same-gen memo: CheapRebuild + Orch + UpgradeSeed re-entered
+    -- PickPlantCandidate x3–x4 per cult storm (libperf).
+    local Watch = StockPiler4.Watch
+    local Garden = StockPiler4.Garden
+    local watchGen = Watch and Watch.GetGen and Watch.GetGen() or 0
+    local gardenGen = Garden and (Garden.GetPlanGen and Garden.GetPlanGen()
+        or Garden.GetGen and Garden.GetGen()) or 0
+    local memoKey = tostring(watchGen) .. ":" .. tostring(gardenGen)
+        .. ":" .. tostring(opts.demand ~= nil)
+    if PlantPlan._pickMemoKey == memoKey and PlantPlan._pickMemoProbed == true then
+        return PlantPlan._pickMemoJob
+    end
     local Perf = StockPiler4.Perf
     if Perf and Perf.Begin then
         Perf.Begin("PickPlantCandidate")
     end
     local function done(job)
+        PlantPlan._pickMemoKey = memoKey
+        PlantPlan._pickMemoJob = job
+        PlantPlan._pickMemoProbed = true
         if Perf and Perf.End then
             Perf.End("PickPlantCandidate")
         end
@@ -1241,13 +1258,14 @@ function PlantPlan.PickPlantJob(opts)
         return done(nil)
     end
 
-    local Watch = StockPiler4.Watch
+    local WatchBuf = StockPiler4.Watch
     local lines = {}
     local focusGap = maxGap
-    if Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true
-        and RS.CollectAutoGrowSeedLines
+    local PlannerMod = StockPiler4.Planner
+    if WatchBuf and WatchBuf.IsSeedBufferEnabled and WatchBuf.IsSeedBufferEnabled() == true
+        and PlannerMod and PlannerMod.CollectAutoGrowSeedLines
     then
-        lines = RS.CollectAutoGrowSeedLines() or {}
+        lines = PlannerMod.CollectAutoGrowSeedLines() or {}
         if focusGap <= 0 then
             for i = 1, #watches do
                 local d = tonumber(watches[i].deficit) or 0
@@ -1282,9 +1300,10 @@ function PlantPlan.PickPlantJob(opts)
     end
 
     -- Idle SkillUp Cult: only after watches are done (SkillUp.ShouldCultPlant gates).
-    local SkillUp = StockPiler4.SkillUp
-    if SkillUp and SkillUp.ShouldCultPlant and SkillUp.ShouldCultPlant() == true then
-        local job = SkillUp.PickPlantJob and SkillUp.PickPlantJob()
+    local Gates = StockPiler4.SkillUpGates
+    local CSP = StockPiler4.CultSkillPlan
+    if Gates and Gates.ShouldCultPlant and Gates.ShouldCultPlant() == true then
+        local job = CSP and CSP.PickPlantJob and CSP.PickPlantJob()
         if type(job) == "table" and (tonumber(job.seedUid) or 0) > 0 then
             LogPlantPick(job)
             return done(job)
@@ -1292,8 +1311,8 @@ function PlantPlan.PickPlantJob(opts)
         if StockPiler4.Refine and StockPiler4.Refine.MarkRefineDue then
             StockPiler4.Refine.MarkRefineDue("skill-up")
         end
-        if SkillUp.MaybeNotifyStall then
-            SkillUp.MaybeNotifyStall()
+        if CSP and CSP.MaybeNotifyStall then
+            CSP.MaybeNotifyStall()
         end
     end
     return done(nil)

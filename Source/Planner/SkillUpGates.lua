@@ -11,6 +11,10 @@ local function Caps()
     return StockPiler4.TradeSkillCaps
 end
 
+local function ClimbEconomy()
+    return StockPiler4.ClimbPlan or StockPiler4.UpgradeSeed
+end
+
 local function CharRow(create)
     local Watch = StockPiler4.Watch
     if Watch and Watch.CharacterRow then
@@ -131,7 +135,8 @@ function Gates.SetApoEnabled(enabled)
     return true
 end
 
-local function AllEnabledPlantWatchesStocked()
+--- True when every enabled plant watch is at/above target (Upgrade-owned watches count as stocked).
+function Gates.AllEnabledPlantWatchesStocked()
     local Watch = StockPiler4.Watch
     local plantWatches = Watch and Watch.GetPlantWatches and Watch.GetPlantWatches() or {}
     if type(plantWatches) ~= "table" then
@@ -166,7 +171,8 @@ local function AllEnabledPlantWatchesStocked()
     return true
 end
 
-local function SeedBufferOk()
+--- True when seed buffer is disabled or Grow reports the buffer satisfied.
+function Gates.SeedBufferOk()
     local Watch = StockPiler4.Watch
     if not (Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true) then
         return true
@@ -183,11 +189,11 @@ function Gates.WatchesDone()
     then
         return false
     end
-    if AllEnabledPlantWatchesStocked() ~= true then
+    if Gates.AllEnabledPlantWatchesStocked() ~= true then
         return false
     end
     -- SkillUp must not run while the seed buffer is short (even with no AutoGrow watches).
-    return SeedBufferOk()
+    return Gates.SeedBufferOk()
 end
 
 -- Statuses where a short watch can still advance (SkillUp must wait).
@@ -280,11 +286,10 @@ local function PotionNeedsSkill(key)
 end
 
 local function PotionWatchWantsAutoGrow(key, watch)
-    local RS = StockPiler4.RecipeSpec
-    if RS and RS.ShouldAutoGrowPotion then
-        return RS.ShouldAutoGrowPotion(key, watch) == true
-    end
     local Watch = StockPiler4.Watch
+    if Watch and Watch.ShouldAutoGrowPotion then
+        return Watch.ShouldAutoGrowPotion(key, watch) == true
+    end
     if type(watch) ~= "table" or watch.enabled ~= true then
         return false
     end
@@ -390,7 +395,7 @@ function Gates.WatchesAllowIdleSkillUp()
     if Gates.WatchesDone() == true then
         return true
     end
-    if SeedBufferOk() ~= true then
+    if Gates.SeedBufferOk() ~= true then
         return false
     end
     return Gates.AllShortWatchesProgressBlocked() == true
@@ -464,31 +469,6 @@ end
 --- Back-compat alias used by plant/refine/buy paths.
 function Gates.ShouldCultPlant()
     return Gates.ShouldCultGrowForSkillUp() == true
-
-local function Reexport()
-    local SU = StockPiler4.SkillUp
-    if type(SU) ~= "table" then
-        SU = {}
-        StockPiler4.SkillUp = SU
-    end
-    local names = {
-        "CULT_MAX", "APO_MAX", "CULT_TIERS", "APO_TIERS",
-        "FloorApoTier", "FloorCultTier", "GetCultSkill", "GetApoSkill",
-        "IsCultTrained", "IsApoTrained", "IsCultVisible", "IsApoVisible",
-        "IsCultEnabled", "IsApoEnabled", "SetCultEnabled", "SetApoEnabled",
-        "WatchesDone", "AllShortWatchesProgressBlocked", "WatchesAllowIdleSkillUp",
-        "TargetMaxSkill", "ShouldCultGrowForSkillUp", "ShouldCultPlant",
-    }
-    for i = 1, #names do
-        local n = names[i]
-        if Gates[n] ~= nil then
-            SU[n] = Gates[n]
-        end
-    end
 end
 
-function Gates.SyncSkillUpExports()
-    Reexport()
-end
 
-Reexport()
