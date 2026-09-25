@@ -644,6 +644,29 @@ end
 --- Execute a plant intent (plot validation + CultivatorAdapter.PlantSeed).
 function Grow.ExecutePlant(intent, opId)
     local Perf = StockPiler4.Perf
+    if Perf and Perf.SetSpikePhase then
+        Perf.SetSpikePhase("executePlant")
+    end
+    -- Always-on uilog breadcrumb so replants align with libperf spikes.
+    if StockPiler4.Debug and StockPiler4.Debug.LogAlways then
+        local plotHint = 0
+        local seedHint = 0
+        if type(intent) == "table" then
+            plotHint = tonumber(intent.plotNum) or 0
+            seedHint = tonumber(intent.seedUid) or 0
+        end
+        local emptyPlots = 0
+        if Grow.CountEmptyPlots then
+            emptyPlots = tonumber(Grow.CountEmptyPlots()) or 0
+        end
+        StockPiler4.Debug.LogAlways(string.format(
+            "grow| ExecutePlant opId=%s plot=%d seedUid=%d emptyPlots=%d",
+            tostring(opId or "?"),
+            plotHint,
+            seedHint,
+            emptyPlots
+        ))
+    end
     if Perf and Perf.Begin then
         Perf.Begin("Grow.ExecutePlant")
     end
