@@ -7,8 +7,9 @@ Clean-core Cultivation + Apothecary stock automation for Return of Reckoning.
 ## Quick start
 
 1. Install under `Interface/AddOns/StockPiler4/` (StockPiler3 may stay installed)
-2. Optional: LibSlash (`/sp4`), LibPerf (`/libperf StockPiler4 on 250`)
-3. Reload UI; open with `/sp4`
+2. From this repo: `.\tools\deploy.ps1` copies `StockPiler4.mod` + `Source\` to the live AddOns folder (see [`tools/README.md`](tools/README.md))
+3. Optional: LibSlash (`/sp4`), LibPerf (`/libperf StockPiler4 on 250`)
+4. Reload UI; open with `/sp4`
 
 ## Architecture (clean core)
 
