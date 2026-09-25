@@ -40,6 +40,11 @@ Sch._suppressInvTicks = 0
 Sch._pendingAfterSuppress = { bagFlush = false, bagQueue = false, plan = false }
 Sch._pendingPrewarmAfterQuiet = false
 Sch._pendingPrewarmReason = nil
+Sch._pendingPlanAfterPrewarm = false
+Sch._pendingBufferFlagsRebuild = false
+Sch._quietEndClearFrame = 0
+Sch.INTENT_REFRESH_COOLDOWN_SEC = 2.0
+Sch._intentRefreshCooldownUntil = 0
 Sch._initialized = false
 Sch._harvestStormUntil = 0
 Sch._plantQuietUntil = 0
@@ -147,6 +152,71 @@ local function FlushPendingPrewarmAfterQuiet()
         Planner.InvalidateHaveCacheAfterQuiet()
     end
     RequestCachePrewarm(reason)
+    -- Rebuild after prewarm finishes — never same frame as quiet-end flush.
+    Sch._pendingPlanAfterPrewarm = true
+end
+
+--- After quiet/storm prewarm: enqueue one coalesced rebuild when FrameWork is idle.
+local function FlushPendingPlanAfterPrewarm()
+    if Sch._pendingPlanAfterPrewarm ~= true then
+        return false
+    end
+    if Sch.SkipPlanThisFrameActive and Sch.SkipPlanThisFrameActive() == true then
+        return false
+    end
+    if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
+        return false
+    end
+    if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+        return false
+    end
+    local FW = StockPiler4.FrameWork
+    if FW and FW.IsPrewarmBusy and FW.IsPrewarmBusy() == true then
+        return false
+    end
+    if FW and FW.Busy and FW.Busy() == true then
+        return false
+    end
+    -- Vendor visit owns the tick; ArmPlanAfterBuyFill rebuilds once at visit end.
+    local Buy = StockPiler4.Buy
+    if Buy and Buy.NeedsTick and Buy.NeedsTick() == true then
+        return false
+    end
+    Sch._pendingPlanAfterPrewarm = false
+    if Sch.EnqueuePlanRebuild then
+        Sch.EnqueuePlanRebuild({ nudge = true, reason = "quiet-end-prewarm" })
+    end
+    return true
+end
+
+--- Idle one-heavy: rebuild BufferFlags after invalidate (never on Orch plant frame).
+local function FlushPendingBufferFlagsRebuild(didHeavy)
+    if Sch._pendingBufferFlagsRebuild ~= true then
+        return false
+    end
+    if didHeavy == true then
+        return false
+    end
+    if Sch.SkipPlanThisFrameActive and Sch.SkipPlanThisFrameActive() == true then
+        return false
+    end
+    if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
+        return false
+    end
+    if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+        return false
+    end
+    if Sch.IsSessionSettling and Sch.IsSessionSettling() == true then
+        return false
+    end
+    local Refine = StockPiler4.Refine
+    if not (Refine and Refine.EnsureBufferFlagsNow) then
+        Sch._pendingBufferFlagsRebuild = false
+        return false
+    end
+    Sch._pendingBufferFlagsRebuild = false
+    Refine.EnsureBufferFlagsNow()
+    return true
 end
 
 local function DecaySuppressInventorySideEffects()
@@ -236,6 +306,11 @@ local function RebuildPlanIfDue()
     end
     local Orch = StockPiler4.Orchestrator
     if Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true then
+        return false
+    end
+    -- Hold full rebuild while AutoBuy visit is open (visit-end rebuilds once).
+    local Buy = StockPiler4.Buy
+    if Buy and Buy.NeedsTick and Buy.NeedsTick() == true then
         return false
     end
     local RP = StockPiler4.RefinePipeline
@@ -363,8 +438,12 @@ function Sch.ShouldDeferFooterFlush()
     return untilF > 0 and fc < untilF
 end
 
---- Hold Macro.Appearance during quiet / settle / SkipUi and until stagger frame.
+--- Hold Macro.Appearance during quiet / settle / SkipUi / cult UPDATE and stagger.
 function Sch.ShouldDeferMacroDrain()
+    local Bridge = StockPiler4.EngineEventBridge
+    if Bridge and Bridge._cultUpdatedPending == true then
+        return true
+    end
     if Sch.SkipUiThisFrameActive and Sch.SkipUiThisFrameActive() == true then
         return true
     end
@@ -387,6 +466,11 @@ end
 
 --- Coalesce plant/refine intent refresh onto an idle one-heavy frame (after quiet).
 function Sch.EnqueuePlantIntentRefresh()
+    local untilT = tonumber(Sch._intentRefreshCooldownUntil) or 0
+    local now = Now()
+    if untilT > 0 and now > 0 and now < untilT then
+        return
+    end
     Sch._pendingIntentRefresh = true
 end
 
@@ -416,7 +500,14 @@ local function FlushPendingIntentRefresh(didHeavy)
     Sch._pendingIntentRefresh = false
     local Planner = StockPiler4.Planner
     if Planner and Planner.RefreshPlantRefineIntentsNow then
-        Planner.RefreshPlantRefineIntentsNow()
+        local ok = Planner.RefreshPlantRefineIntentsNow()
+        -- Nil pick / unchanged intents: cooldown so snap/orch cannot pile PickPlant.
+        if ok ~= true then
+            local cd = tonumber(Sch.INTENT_REFRESH_COOLDOWN_SEC) or 2.0
+            Sch._intentRefreshCooldownUntil = Now() + cd
+        else
+            Sch._intentRefreshCooldownUntil = 0
+        end
         return true
     end
     return false
@@ -678,7 +769,7 @@ function Sch.IsHarvestStorm()
     end
     if now >= untilT then
         Sch._harvestStormUntil = 0
-        -- Storm end: skip plan+UI this frame; enqueue coalesced rebuild for later.
+        -- Storm end: skip plan+UI this frame; prewarm only (rebuild after prewarm).
         -- Do not InvalidatePlantQueue here (that piled WarmHave + Build
         -- + Watch flush into the first post-harvest / replant hitch).
         Sch.SkipPlanThisFrame()
@@ -689,12 +780,16 @@ function Sch.IsHarvestStorm()
             SetSpikePhase("plantQuiet")
         else
             SetSpikePhase("quietEnd")
-        end
-        if Sch.EnqueuePlanRebuild then
-            Sch.EnqueuePlanRebuild({ nudge = true })
+            local fc = tonumber(StockPiler4.FrameCounter) or 0
+            Sch._quietEndClearFrame = fc + 1
         end
         Sch.MarkWatchUiDirty()
+        -- Prewarm OR rebuild — FlushPendingPrewarmAfterQuiet latches plan after.
         FlushPendingPrewarmAfterQuiet()
+        if Sch._pendingPrewarmAfterQuiet ~= true and Sch._pendingPlanAfterPrewarm ~= true then
+            -- No deferred prewarm; still need a later rebuild without stacking.
+            Sch._pendingPlanAfterPrewarm = true
+        end
     end
     return false
 end
@@ -710,12 +805,32 @@ function Sch.IsPlantQuiet()
     end
     if now >= untilT then
         Sch._plantQuietUntil = 0
-        -- Quiet-end rebuild / prewarm attribution (instrumentation only).
-        -- Leave quietEnd armed so the hitch OnFrame for this work sees it.
+        -- Quiet-end: prewarm this path; rebuild after prewarm (one heavy).
         SetSpikePhase("quietEnd")
+        local fc = tonumber(StockPiler4.FrameCounter) or 0
+        Sch._quietEndClearFrame = fc + 1
+        Sch.SkipPlanThisFrame()
+        Sch.SkipUiThisFrame()
         FlushPendingPrewarmAfterQuiet()
+        if Sch._pendingPrewarmAfterQuiet ~= true and Sch._pendingPlanAfterPrewarm ~= true then
+            Sch._pendingPlanAfterPrewarm = true
+        end
     end
     return false
+end
+
+--- Clear quietEnd phase the frame after quiet/storm end (stops trail flood).
+local function MaybeClearQuietEndPhase()
+    local clearAt = tonumber(Sch._quietEndClearFrame) or 0
+    if clearAt <= 0 then
+        return
+    end
+    local fc = tonumber(StockPiler4.FrameCounter) or 0
+    if fc < clearAt then
+        return
+    end
+    Sch._quietEndClearFrame = 0
+    ClearSpikePhase("quietEnd")
 end
 
 -- Aliases used by other modules / SP2-shaped call sites.
@@ -1054,6 +1169,7 @@ function Sch.OnUpdate(timeElapsed)
     if Sch.IsPlantQuiet then
         Sch.IsPlantQuiet()
     end
+    MaybeClearQuietEndPhase()
     MaybeFinishSessionSettle()
 
     local didHeavy = false
@@ -1073,7 +1189,15 @@ function Sch.OnUpdate(timeElapsed)
     then
         didHeavy = true
     end
+    -- Quiet-end: enqueue rebuild only after prewarm idle (not same frame as Pump).
+    if not didHeavy then
+        FlushPendingPlanAfterPrewarm()
+    end
     if not didHeavy and RebuildPlanIfDue() then
+        didHeavy = true
+    end
+    -- BufferFlags rebuild after invalidate — never same frame as Orch plant/additive.
+    if not didHeavy and FlushPendingBufferFlagsRebuild(false) then
         didHeavy = true
     end
     -- Intent refresh after quiet, under one-heavy — never same frame as Orch plant/additive.
@@ -1155,4 +1279,10 @@ function Sch.Shutdown()
     Sch._planDue = false
     Sch._harvestStormUntil = 0
     Sch._plantQuietUntil = 0
+    Sch._pendingPrewarmAfterQuiet = false
+    Sch._pendingPlanAfterPrewarm = false
+    Sch._pendingBufferFlagsRebuild = false
+    Sch._quietEndClearFrame = 0
+    Sch._intentRefreshCooldownUntil = 0
+    Sch._pendingIntentRefresh = false
 end

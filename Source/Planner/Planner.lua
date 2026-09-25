@@ -3927,7 +3927,7 @@ local function TryCheapRebuild()
     plan.seedBufferTipData = BuildSeedBufferTipData({
         previous = plan.seedBufferTipData,
     })
-    RefreshPlantRefineIntents(plan)
+    -- Intent refresh is one-heavy after CheapRebuild (never PickPlant same frame).
     local key = RefreshStaleCtx(plan)
     local planGen = (tonumber(Planner._planGen) or 0) + 1
     Planner._planGen = planGen
@@ -3936,6 +3936,10 @@ local function TryCheapRebuild()
     plan.builtAt = (type(GetGameTime) == "function" and GetGameTime()) or 0
     PublishPlan(plan, key, { cheap = true })
     PerfEnd("Planner.CheapRebuild")
+    local Sch = StockPiler4.Scheduler
+    if Sch and Sch.EnqueuePlantIntentRefresh then
+        Sch.EnqueuePlantIntentRefresh()
+    end
     return plan
 end
 
@@ -3982,7 +3986,7 @@ local function TryGardenPatch()
             end
         end
     end
-    RefreshPlantRefineIntents(plan)
+    -- Intent refresh is one-heavy after GardenPatch (never PickPlant same frame).
     local key = RefreshStaleCtx(plan)
     local planGen = (tonumber(Planner._planGen) or 0) + 1
     Planner._planGen = planGen
@@ -3991,6 +3995,10 @@ local function TryGardenPatch()
     plan.builtAt = (type(GetGameTime) == "function" and GetGameTime()) or 0
     PublishPlan(plan, key, { gardenPatch = true })
     PerfEnd("Planner.GardenPatch")
+    local Sch = StockPiler4.Scheduler
+    if Sch and Sch.EnqueuePlantIntentRefresh then
+        Sch.EnqueuePlantIntentRefresh()
+    end
     return plan
 end
 

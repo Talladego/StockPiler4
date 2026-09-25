@@ -155,6 +155,9 @@ function Bridge.OnCultivationUpdated()
     if StockPiler4.Perf and StockPiler4.Perf.Begin then
         StockPiler4.Perf.Begin("CultivationUpdated")
     end
+    -- Hold Macro.Appearance on the UPDATE that saw CultivationUpdated
+    -- (login cult burst + nested PlantSeed/AddAdditive).
+    Bridge._cultUpdatedPending = true
     local plotNum = 0
     if GameData and GameData.Player and GameData.Player.Cultivation then
         plotNum = tonumber(GameData.Player.Cultivation.UpdatedIndex) or 0
@@ -385,18 +388,25 @@ function Bridge.OnUpdateProcessed(timeElapsed)
             -- LibPerf owns hitch file; companion uilog line carries phase tags.
             Perf.NoteSpikePhaseFrame(timeElapsed)
         end
-        -- Stamp active phase into trail early so empty-trail spikes still attribute.
-        if Perf and Perf.StampSpikePhase then
-            Perf.StampSpikePhase()
-        end
+        -- Phase tags go on hitch lines only (StampSpikePhase is a no-op).
 
         if StockPiler4.Garden and StockPiler4.Garden.FlushPendingSyncAll then
             StockPiler4.Garden.FlushPendingSyncAll()
         end
 
-        -- Coalesced Inv.ApplySlots (main + craft)
-        Bridge.FlushPendingMainSlots()
-        Bridge.FlushPendingCraftSlots()
+        -- Coalesced Inv.ApplySlots (main + craft) — bag frame is the heavy:
+        -- skip orch + plan so buy/plant/additive never stack with ApplySlots.
+        local appliedMain = Bridge.FlushPendingMainSlots() == true
+        local appliedCraft = Bridge.FlushPendingCraftSlots() == true
+        if appliedMain or appliedCraft then
+            local SchSkip = StockPiler4.Scheduler
+            if SchSkip and SchSkip.SkipOrchThisFrame then
+                SchSkip.SkipOrchThisFrame()
+            end
+            if SchSkip and SchSkip.SkipPlanThisFrame then
+                SchSkip.SkipPlanThisFrame()
+            end
+        end
 
         -- Flush pending snapGen
         if StockPiler4.Inventory and StockPiler4.Inventory.FlushPendingSnapGen then
@@ -434,6 +444,8 @@ function Bridge.OnUpdateProcessed(timeElapsed)
         if Sch and Sch.ClearSkipUiHoldFooter then
             Sch.ClearSkipUiHoldFooter()
         end
+        -- CultivationUpdated hold applies to this UPDATE only.
+        Bridge._cultUpdatedPending = false
     end)
     Bridge._inUpdate = false
     if ok ~= true and StockPiler4.Debug and StockPiler4.Debug.ReportProtectedCallFailure then

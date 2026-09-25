@@ -71,16 +71,14 @@ end
 
 local function HasPendingBufferRefine()
     local Refine = StockPiler4.Refine
-    -- Prefer O(1) peek on the orch hot path; full BufferFlags rebuild only when
-    -- no cache (first tick / after invalidate).
+    -- Peek-only on Orch hot path; never Grow.HasPendingBufferRefine (rebuilds).
     if Refine and Refine.HasBufferFlagsCache and Refine.HasBufferFlagsCache() == true
         and Refine.PeekCachedBufferPending
     then
         return Refine.PeekCachedBufferPending() == true
     end
-    local Grow = StockPiler4.Grow
-    if Grow and Grow.HasPendingBufferRefine and Grow.HasPendingBufferRefine() == true then
-        return true
+    if Refine and Refine.RequestBufferFlagsRebuild then
+        Refine.RequestBufferFlagsRebuild()
     end
     return false
 end
@@ -393,10 +391,10 @@ function Orch._TickBody()
         end
         local opId = Orch.NewOpId()
         if canPlant and hasSeeds then
-            if TryExecutePlant(opId, { checkHold = false, clearFillBlocked = true }) then
-                EndTick()
-                return
-            end
+            -- One cult action per tick: plant attempt ends tick (no refine stack).
+            TryExecutePlant(opId, { checkHold = false, clearFillBlocked = true })
+            EndTick()
+            return
         end
         if (bufferRefine or refineForced or usRefine)
             and Refine and Refine.ShouldAllowRefineNow and Refine.ShouldAllowRefineNow() == true
@@ -526,12 +524,14 @@ function Orch._TickBody()
             if Sch and Sch.SetAutoGrowIdle then
                 Sch.SetAutoGrowIdle(false)
             end
-        elseif TryExecutePlant(opId, { checkDefer = false }) then
+            -- Deferred: not attempted; may fall through to additives only.
+        else
+            -- One cult action per tick: attempt ends tick (success or fail).
+            if TryExecutePlant(opId, { checkDefer = false }) ~= true then
+                Orch.SetFillBlocked(5)
+            end
             EndTick()
             return
-        else
-            -- Plant fail / no-seeds: arm fillBlocked (extend only)
-            Orch.SetFillBlocked(5)
         end
     elseif canPlant and hasSeeds and holdHarvestBatch then
         if Sch and Sch.SetAutoGrowIdle then
@@ -576,18 +576,15 @@ function Orch._TickBody()
         Orch._seedBufferRefineArmed = false
     end
 
-    -- 2) Additives
+    -- 2) Additives (own tick — never stack with plant attempt or refine)
     if needAdditives then
-        local added = false
         if Grow and Grow.TryAdditive then
-            added = Grow.TryAdditive(opId) == true
+            if Grow.TryAdditive(opId) == true then
+                SetPhase("planting", "additive")
+            end
         end
-        if added then
-            SetPhase("planting", "additive")
-            -- TryAdditive arms plant quiet + fast ticks; no WakeAutoGrow.
-            EndTick()
-            return
-        end
+        EndTick()
+        return
     end
 
     -- 3) Refine
@@ -607,17 +604,11 @@ function Orch._TickBody()
             EndTick()
             return
         end
-        -- After failed refine, refresh plantIntent probe and plant same tick if snapshot has intent.
+        -- After failed refine: do not plant same tick (one cult action).
         if canPlant and Grow and Grow.MarkPlantJobDirty then
             Grow.MarkPlantJobDirty("refine-miss")
-            hasSeeds = ProbePlantHasSeeds(Grow, false)
         end
-        if canPlant and hasSeeds and not holdHarvestBatch then
-            if TryExecutePlant(opId, { checkDefer = false }) then
-                EndTick()
-                return
-            end
-        elseif canPlant and not hasSeeds then
+        if canPlant and not ProbePlantHasSeeds(Grow, false) then
             if not ClearFillIfBufferOk() then
                 Orch.SetFillBlocked(5)
             end

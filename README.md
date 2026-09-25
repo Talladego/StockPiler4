@@ -2,7 +2,7 @@
 
 Clean-core Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.4.36** — Parallel-safe sibling of StockPiler3 with GenusLadder + ClimbPlan, immutable plan snapshots, Watch→Footer→Macro first-paint stagger, and plant intent-refresh deferred off Orch execute frames. SkillUp is split across Gates / CultSkillPlan / ApoSkillPlan / SkillUpWatchStatus; 0.4.36 adds libperf spike phase tags (`phase=login|harvestStorm|plantQuiet|quietEnd|executePlant|dumpall|unknown` + emptyPlots/additive) for soak attribution.
+**Version 0.4.38** — Parallel-safe sibling of StockPiler3 with GenusLadder + ClimbPlan, immutable plan snapshots, Watch→Footer→Macro first-paint stagger, and plant intent-refresh deferred off Orch execute frames. SkillUp is split across Gates / CultSkillPlan / ApoSkillPlan / SkillUpWatchStatus; 0.4.38 one cult action per Orch tick + peek-only BufferFlags on plant/additive frames.
 
 ## Quick start
 

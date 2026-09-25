@@ -14,14 +14,15 @@ off the Orch execute frame under one-heavy after quiet.
 
 ```
 UPDATE_PROCESSED
+  → Inv.ApplySlots (if applied: SkipOrch + SkipPlan — bag frame is the heavy)
   → bag flush (coalesced; deferred in plant quiet / harvest storm)
   → FrameWork.Pump  (≤1 prewarm step / frame)
-  → PlanRebuild     (held while IsPrewarmBusy / quiet / storm)
-  → IntentRefresh   (EnqueuePlantIntentRefresh; one-heavy after quiet)
-  → Orchestrator.Tick  (plant/additive; nested CultivationUpdated arms quiet)
+  → PlanRebuild     (held while IsPrewarmBusy / quiet / storm / vendor visit)
+  → IntentRefresh   (EnqueuePlantIntentRefresh; one-heavy after quiet; nil-pick cooldown)
+  → Orchestrator.Tick  (plant/additive/buy; nested CultivationUpdated arms quiet)
   → Watch UI flush  (held while IsPrewarmBusy / quiet / storm / orch just ran)
   → Footer coalesce (held while SkipUiHoldFooter / quiet / storm / Watch stagger)
-  → Macro.Appearance drain (held while quiet / settle / Footer stagger)
+  → Macro.Appearance drain (held while quiet / settle / cult UPDATE / Footer stagger)
 ```
 
 ### Prewarm jobs (FrameWork)
@@ -46,7 +47,7 @@ UPDATE_PROCESSED
 | Harvest-ready / op-lock | Coalesce Footer only — **no** `immediate` SyncActionReadiness |
 | `OnFooterDirty` immediate | Ignored while quiet / storm / SkipUiHoldFooter |
 | Quiet / storm | Skip Pump; defer bag flush; hold PlanRebuild + Watch; latch `_pendingPrewarmAfterQuiet` |
-| Quiet / storm end | `FlushPendingPrewarmAfterQuiet` → invalidate have-cache → `RequestCachePrewarm` |
+| Quiet / storm end | Prewarm **or** later rebuild (`_pendingPlanAfterPrewarm`); never both same frame |
 | Orch before Watch | Plant/additive nested cult sets SkipUi **before** RefreshWatch |
 | Orch ran this frame | Skip Watch Flatten (one heavy) |
 | `IsPrewarmBusy` | Hold PlanRebuild + Watch until collect/bag/demand/seeds finish |
@@ -125,11 +126,29 @@ plus `emptyPlots=N additive=N`. Phase is set/cleared at existing arm/disarm
 points only — no quiet/warm-hold or Watch→Footer→Macro / IntentRefresh changes.
 `Grow.ExecutePlant` emits an always-on uilog breadcrumb.
 
+## 0.4.37 — Libperf hitch cuts
+
+| Former hotspot | Mitigation |
+| :--- | :--- |
+| `phase=quietEnd x1692` trail flood | No per-frame `Perf.Mark`; clear `quietEnd` next frame; companion hitch uses `timeElapsed` |
+| Buy/plant + `Inv.ApplySlots` same frame (~270–315ms) | ApplySlots → `SkipOrch` + `SkipPlan` (bag frame is the heavy) |
+| Quiet-end Build + WarmHave + IntentRefresh stack | Prewarm first; rebuild after prewarm idle; hold rebuild during vendor visit |
+| CheapRebuild / GardenPatch + PickPlant same frame | Enqueue intent refresh; 2s cooldown when pick stays nil |
+| Login `Macro.Appearance` on cult burst | Defer Macro while `_cultUpdatedPending` |
+
+## 0.4.38 — Plant/additive one-action
+
+| Former hotspot | Mitigation |
+| :--- | :--- |
+| `Refine.BufferFlags` + `Grow.ExecutePlant` same tick | Orch peek-only BufferFlags; rebuild latched to Scheduler one-heavy |
+| `ExecutePlant` + `TryAdditive` / `IssueOne` same tick | One cult action per Orch tick (plant attempt or additive attempt ends tick) |
+| Refine-then-plant same tick after miss | No plant after failed refine; next tick only |
+
 ## Retest notes
 
-1. `/reload` → **v0.4.36**. `/libperf StockPiler4 on 250`.
+1. `/reload` → **v0.4.38**. `/libperf StockPiler4 on 250` (not 50).
 2. Login/settle and first `/sp4` Watch open: expect RefreshWatch, Footer, Macro.Appearance on **separate** frames; spikes show `phase=login` while settling.
-3. AutoGrow plant → soil/water/nutrient → additive cycle with window open on Watch; expect `grow| ExecutePlant` breadcrumbs and spikes tagged `executePlant` / `plantQuiet` / `harvestStorm` / `quietEnd`.
-4. Expect: cult frames without `RefreshWatch`/`Macro.Appearance`; Orch execute frames without `IntentRefresh*`; post-quiet intent drain as named child or Orch.Tick under thr.
-5. `/libperf StockPiler4 summary` and `/sp4 perf` — confirm phase + emptyPlots/additive on spike lines (including `trail=(none)` when a phase is active).
+3. AutoGrow plant → soil/water/nutrient → additive cycle: plant lines without `Refine.BufferFlags` / `TryAdditive` / `IssueOne`; additive lines without plant/refine.
+4. Expect: cult frames without `RefreshWatch`/`Macro.Appearance`; Orch execute frames without `IntentRefresh*`; post-quiet prewarm then rebuild on later frames.
+5. `/libperf StockPiler4 summary` and `/sp4 perf` — no `phase=… x1000` trails; remaining ~140ms `trail=(none)` is the client floor.
 6. Watch craftable / plantIntent catch up within ~5s after quiet (warm-hold); planting resumes on the tick after intent drain.

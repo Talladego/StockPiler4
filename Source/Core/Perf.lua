@@ -99,27 +99,9 @@ local function AttachSpikePhaseApi(Perf)
         )
     end
 
-    --- Stamp active phase into the hitch trail early each frame so `(none)`
-    --- empty-trail spikes still carry phase when a phase is armed.
+    --- No-op: per-frame Perf.Mark flooded trails (phase=quietEnd x1692).
+    --- Phase context is appended only on real hitch lines via FormatSpikeContext.
     function Perf.StampSpikePhase()
-        local phase = Perf.GetSpikePhase()
-        if phase == "unknown" then
-            return
-        end
-        local enabled = true
-        if type(Perf.IsEnabled) == "function" then
-            enabled = Perf.IsEnabled() == true
-        elseif Perf.Enabled ~= nil then
-            enabled = Perf.Enabled == true
-        end
-        -- LibPerf may not expose IsEnabled until /libperf on; still stamp when
-        -- Available so trail carries phase for the hitch file.
-        if enabled ~= true and Perf.Available ~= true then
-            return
-        end
-        if Perf.Mark then
-            Perf.Mark(Perf.FormatSpikeContext())
-        end
     end
 
     local origPrintSummary = Perf.PrintSummary or Perf.DumpSummary
@@ -231,13 +213,17 @@ local function MakeInAddonPerf()
         Perf._summary = { spikes = 0, emptyTrail = 0 }
     end
 
-    function Perf.OnFrame(_timeElapsed)
+    function Perf.OnFrame(timeElapsed)
         if Perf.Enabled ~= true then
             return
         end
-        local now = (GetGameTime and GetGameTime()) or 0
-        local dt = (now - (Perf._frameT0 or now)) * 1000
-        Perf._frameT0 = now
+        -- Prefer frame delta (ms); GetGameTime is 1s resolution and false-triggers.
+        local dt = (tonumber(timeElapsed) or 0) * 1000
+        if dt <= 0 then
+            local now = (GetGameTime and GetGameTime()) or 0
+            dt = (now - (Perf._frameT0 or now)) * 1000
+            Perf._frameT0 = now
+        end
         if dt < (tonumber(Perf.FrameThresholdMs) or 400) then
             if Perf._hold ~= true then
                 Perf._trail = {}
@@ -343,9 +329,9 @@ if LibPerf and type(LibPerf.Scope) == "function" then
     AttachSpikePhaseApi(Perf)
     -- Companion hitch line when LibPerf is on (Bridge skips Perf.OnFrame for
     -- Available=true). Mirror threshold hits into uilog with phase context.
-    local _frameT0 = 0
+    -- Use timeElapsed (frame delta); GetGameTime is 1s resolution (~1000ms spam).
     local _spikeCount = 0
-    function Perf.NoteSpikePhaseFrame(_timeElapsed)
+    function Perf.NoteSpikePhaseFrame(timeElapsed)
         local on = false
         if type(Perf.IsEnabled) == "function" then
             on = Perf.IsEnabled() == true
@@ -358,14 +344,10 @@ if LibPerf and type(LibPerf.Scope) == "function" then
         if on ~= true then
             return
         end
-        -- Always measure when LibPerf scope is enabled.
-        local now = (GetGameTime and GetGameTime()) or 0
-        local prev = _frameT0
-        _frameT0 = now
-        if prev <= 0 or now <= 0 then
+        local dt = (tonumber(timeElapsed) or 0) * 1000
+        if dt <= 0 then
             return
         end
-        local dt = (now - prev) * 1000
         local thrMs = CAPTURE_FLOOR_MS
         if Perf.GetThreshold then
             thrMs = tonumber(Perf.GetThreshold()) or thrMs

@@ -633,16 +633,6 @@ function Refine.InvalidateIntentCache()
     Refine._intentCache = nil
 end
 
-function Refine.InvalidateBufferFlags()
-    if type(Refine._bufferFlags) == "table" then
-        Refine._bufferFlagsSticky = Refine._bufferFlags
-        Refine._bufferFlagsStickyStruct = Refine._bufferFlagsStructKey
-    end
-    Refine._bufferFlagsKey = nil
-    Refine._bufferFlags = nil
-    Refine._bufferFlagsStructKey = nil
-end
-
 --- Last cached pending flag without rebuilding (snap wake path).
 function Refine.PeekCachedBufferPending()
     local flags = Refine._bufferFlags
@@ -655,10 +645,46 @@ function Refine.PeekCachedBufferPending()
     return flags.pending == true
 end
 
+--- Last cached short flag without rebuilding.
+function Refine.PeekCachedBufferShort()
+    local flags = Refine._bufferFlags
+    if type(flags) ~= "table" then
+        flags = Refine._bufferFlagsSticky
+    end
+    if type(flags) ~= "table" then
+        return false
+    end
+    return flags.short == true
+end
+
 --- True when BufferFlags cache is warm (orch can peek without rebuild).
 function Refine.HasBufferFlagsCache()
     return type(Refine._bufferFlags) == "table"
         or type(Refine._bufferFlagsSticky) == "table"
+end
+
+--- Latch a Scheduler one-heavy BufferFlags rebuild (never sync on Orch plant frame).
+function Refine.RequestBufferFlagsRebuild()
+    local Sch = StockPiler4.Scheduler
+    if Sch then
+        Sch._pendingBufferFlagsRebuild = true
+    end
+end
+
+--- Sync rebuild for Scheduler drain only (not Orch hot path).
+function Refine.EnsureBufferFlagsNow()
+    return EnsureBufferFlagsCached()
+end
+
+function Refine.InvalidateBufferFlags()
+    if type(Refine._bufferFlags) == "table" then
+        Refine._bufferFlagsSticky = Refine._bufferFlags
+        Refine._bufferFlagsStickyStruct = Refine._bufferFlagsStructKey
+    end
+    Refine._bufferFlagsKey = nil
+    Refine._bufferFlags = nil
+    Refine._bufferFlagsStructKey = nil
+    Refine.RequestBufferFlagsRebuild()
 end
 
 --- O(1) urgent snap invalidate - do not rebuild BufferFlags / HasAnyBufferShort here.
@@ -721,6 +747,29 @@ function Refine.DecayRefineWaitTicks()
     end
 end
 
+local function BufferFlagsPeekOrRebuild(field)
+    local Orch = StockPiler4.Orchestrator
+    -- Orch tick: never CollectAutoGrowSeedLines; latch idle rebuild when cold.
+    if Orch and Orch._inTick == true then
+        if Refine.HasBufferFlagsCache() then
+            if field == "short" then
+                return Refine.PeekCachedBufferShort() == true
+            end
+            return Refine.PeekCachedBufferPending() == true
+        end
+        Refine.RequestBufferFlagsRebuild()
+        return false
+    end
+    local flags = EnsureBufferFlagsCached()
+    if type(flags) ~= "table" then
+        return false
+    end
+    if field == "short" then
+        return flags.short == true
+    end
+    return flags.pending == true
+end
+
 function Refine.HasPendingBufferRefine()
     local Watch = StockPiler4.Watch
     if not (Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true) then
@@ -730,7 +779,7 @@ function Refine.HasPendingBufferRefine()
     if not (Planner and Planner.CollectAutoGrowSeedLines) then
         return false
     end
-    return EnsureBufferFlagsCached().pending == true
+    return BufferFlagsPeekOrRebuild("pending")
 end
 
 function Refine.HasAnyBufferShort()
@@ -742,7 +791,7 @@ function Refine.HasAnyBufferShort()
     if not (Planner and Planner.CollectAutoGrowSeedLines) then
         return false
     end
-    return EnsureBufferFlagsCached().short == true
+    return BufferFlagsPeekOrRebuild("short")
 end
 
 function Refine.IsSeedBufferSatisfied()
@@ -939,7 +988,18 @@ function Refine.ShouldAllowRefineNow()
         return false, "brew-session"
     end
     local Grow = StockPiler4.Grow
-    local bufferPending = Grow and Grow.HasPendingBufferRefine and Grow.HasPendingBufferRefine() == true
+    local bufferPending
+    if Orch and Orch._inTick == true then
+        -- Peek sticky/cache only — never CollectAutoGrowSeedLines on plant/refine tick.
+        bufferPending = Refine.PeekCachedBufferPending and Refine.PeekCachedBufferPending() == true
+        if not (Refine.HasBufferFlagsCache and Refine.HasBufferFlagsCache() == true)
+            and Refine.RequestBufferFlagsRebuild
+        then
+            Refine.RequestBufferFlagsRebuild()
+        end
+    else
+        bufferPending = Grow and Grow.HasPendingBufferRefine and Grow.HasPendingBufferRefine() == true
+    end
     local empty = Grow and Grow.HasEmptyPlot and Grow.HasEmptyPlot() == true
     if empty and Grow then
         local plantable = false
