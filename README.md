@@ -2,7 +2,7 @@
 
 Clean-core Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.4.34** — Parallel-safe sibling of StockPiler3 with GenusLadder + ClimbPlan, immutable plan snapshots, Watch→Footer→Macro first-paint stagger, and plant intent-refresh deferred off Orch execute frames.
+**Version 0.4.35** — Parallel-safe sibling of StockPiler3 with GenusLadder + ClimbPlan, immutable plan snapshots, Watch→Footer→Macro first-paint stagger, and plant intent-refresh deferred off Orch execute frames. SkillUp is split across Gates / CultSkillPlan / ApoSkillPlan / SkillUpWatchStatus; 0.4.35 wires WatchStatus helpers through module APIs (fixes undeclared bare locals from the split).
 
 ## Quick start
 
@@ -19,6 +19,7 @@ Clean-core Cultivation + Apothecary stock automation for Return of Reckoning.
 | `PlantPlan` | Plant candidate → `plantIntent` |
 | `PlanSnapshot` | Immutable plan; executors do not patch rows |
 | `Scheduler` | 50ms storm debounce; EventBus UI refresh |
+| `SkillUpGates` / `CultSkillPlan` / `ApoSkillPlan` / `SkillUpWatchStatus` | SkillUp split (gates, cult/apo plans, watch status); WatchStatus uses Gates/CSP module APIs |
 | Adapters / MaterialExceptions / XML | Ported from SP3 |
 
 Reference docs for verification: [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md).
